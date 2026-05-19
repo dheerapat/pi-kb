@@ -1,6 +1,6 @@
 # pi-kb — pi-native Knowledge Base
 
-A pi extension that compiles markdown documents into a structured, interlinked wiki using your LLM. Inspired by [OpenKB](https://github.com/VectifyAI/OpenKB) but built entirely as a pi extension with no external dependencies beyond your LLM.
+A pi extension that compiles markdown documents into a structured, interlinked wiki using your LLM. Inspired by [OpenKB](https://github.com/VectifyAI/OpenKB) (which also inspired by Andrej Karparthy) but built entirely as a pi extension with no external dependencies beyond your LLM.
 
 ## Install
 
@@ -11,19 +11,20 @@ pi install git:github.com/dheerapat/pi-kb
 ## Usage
 
 ```
-/kb-add <file.md>        Add a markdown file to the knowledge base
-/kb-add @file.md         Pi file autocomplete works (strips @ prefix)
-/kb-query <question>     Ask a question against the knowledge base
-/kb-list                 List all documents and concepts
-/kb-status               Show knowledge base stats
-/kb-remove <docName>     Remove a document and clean up wiki pages
+/kb-add <file.md | url>   Add a markdown file or URL to the knowledge base
+/kb-add @file.md          Pi file autocomplete works
+/kb-query <question>      Ask a question against the knowledge base
+/kb-list                  List all documents and concepts
+/kb-status                Show knowledge base stats
+/kb-remove <docName>      Remove a document and clean up wiki pages
 ```
 
 ## How it works
 
 1. `/kb-add docs/peptic_ulcer.md` copies the file into `~/.pi/agent/kb/source/`
-2. Pi's LLM reads the current wiki state, writes a summary, extracts cross-cutting concepts, and updates the index
-3. Everything is stored as plain markdown in `~/.pi/agent/kb/wiki/` — open it in Obsidian for graph view
+2. `/kb-add https://example.com/article` fetches the page, converts HTML to Markdown using [html-to-markdown](https://github.com/kreuzberg-dev/html-to-markdown) (Rust-powered), and saves the result
+3. Pi's LLM reads the current wiki state, writes a summary, extracts cross-cutting concepts, and updates the index
+4. Everything is stored as plain markdown in `~/.pi/agent/kb/wiki/` — open it in Obsidian for graph view
 
 ```
 ~/.pi/agent/kb/

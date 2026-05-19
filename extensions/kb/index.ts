@@ -16,14 +16,18 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { StringEnum } from "@earendil-works/pi-ai";
 
+import { convert } from "@kreuzberg/html-to-markdown-node";
+
 import {
     KB_ROOT,
     ensureKbDir,
     kbExists,
+    hashContent,
     hashFile,
     isInRegistry,
     isDocNameUsed,
     copySource,
+    writeSourceContent,
     readIndex,
     writeIndex,
     listSummaries,
@@ -36,7 +40,6 @@ import {
     deleteSummary,
     readRegistry,
     writeRegistry,
-    dumpWiki,
     type RegistryEntry,
 } from "./store";
 
@@ -63,6 +66,84 @@ function resolvePath(input: string, cwd: string): string {
     return path.resolve(cwd, input);
 }
 
+function isUrl(str: string): boolean {
+    return /^https?:\/\//i.test(str);
+}
+
+function slugify(text: string): string {
+    return text
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 80);
+}
+
+function docNameFromUrl(url: string, metadataTitle?: string | null): string {
+    if (metadataTitle) {
+        const slug = slugify(metadataTitle);
+        if (slug.length > 0) return slug;
+    }
+    try {
+        const { pathname } = new URL(url);
+        const lastSegment = pathname.split("/").filter(Boolean).pop();
+        if (lastSegment) {
+            const withoutExt = lastSegment.replace(/\.[^.]+$/, "");
+            const candidate = slugify(withoutExt);
+            if (candidate.length > 0) return candidate;
+        }
+    } catch {}
+    try {
+        const { hostname } = new URL(url);
+        return slugify(hostname.replace(/^www\./, ""));
+    } catch {
+        return slugify(url).slice(0, 40);
+    }
+}
+
+async function fetchAndConvert(url: string): Promise<{
+    content: string;
+    title: string | null;
+}> {
+    const response = await fetch(url, {
+        headers: {
+            "User-Agent": "pi-kb/0.1.0",
+            Accept: "text/html, text/plain",
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (
+        !contentType.includes("text/html") &&
+        !contentType.includes("text/plain")
+    ) {
+        throw new Error(
+            `Unsupported content type: ${contentType || "unknown"}`,
+        );
+    }
+
+    const html = await response.text();
+
+    if (html.trim().length === 0) {
+        throw new Error("Fetched content is empty");
+    }
+
+    const result = convert(html);
+    if (!result.content || result.content.trim().length === 0) {
+        throw new Error("HTML to markdown conversion produced empty output");
+    }
+
+    return {
+        content: result.content,
+        title: result.metadata?.document?.title ?? null,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -74,7 +155,7 @@ export default function (pi: ExtensionAPI) {
 
     // /kb-add <paths...>
     pi.registerCommand("kb-add", {
-        description: "Add markdown files to the knowledge base",
+        description: "Add markdown files or URLs to the knowledge base",
         handler: async (args, ctx) => {
             if (!args || !args.trim()) {
                 ctx.ui.notify(
@@ -92,6 +173,130 @@ export default function (pi: ExtensionAPI) {
             const { cwd } = ctx;
 
             for (const fp of filePaths) {
+                // ── URL branch ───────────────────────────────────────
+                if (isUrl(fp)) {
+                    ensureKbDir();
+
+                    // Fetch & convert HTML → Markdown
+                    let converted: { content: string; title: string | null };
+                    try {
+                        ctx.ui.notify(`Fetching: ${fp}`, "info");
+                        converted = await fetchAndConvert(fp);
+                    } catch (e: any) {
+                        ctx.ui.notify(
+                            `Failed to fetch ${fp}: ${e.message}`,
+                            "error",
+                        );
+                        continue;
+                    }
+
+                    const content = converted.content;
+                    const docName = docNameFromUrl(fp, converted.title);
+
+                    // Dedup by content hash
+                    const fileHash = hashContent(content);
+                    if (isInRegistry(fileHash)) {
+                        const existing = readRegistry()[fileHash];
+                        ctx.ui.notify(
+                            `Already in KB: ${fp} (added ${existing.addedAt.slice(0, 10)})`,
+                            "warning",
+                        );
+                        continue;
+                    }
+
+                    // Doc-name collision check
+                    if (isDocNameUsed(docName)) {
+                        // Append a suffix to make it unique
+                        const base = docName;
+                        let suffix = 2;
+                        let candidate = `${base}-${suffix}`;
+                        while (isDocNameUsed(candidate)) {
+                            suffix++;
+                            candidate = `${base}-${suffix}`;
+                        }
+                        ctx.ui.notify(
+                            `Slug "${base}" already taken; using "${candidate}" instead.`,
+                            "warning",
+                        );
+                        // Use the unique candidate docName
+                        const finalDocName = candidate;
+                        const finalFilename = `${finalDocName}.md`;
+
+                        // Write source
+                        let sourceRel: string;
+                        try {
+                            const wsc = writeSourceContent(finalFilename, content);
+                            sourceRel = wsc.destRel;
+                        } catch (e: any) {
+                            ctx.ui.notify(
+                                `Failed to save source: ${e.message}`,
+                                "error",
+                            );
+                            continue;
+                        }
+
+                        const entry: RegistryEntry = {
+                            name: finalFilename,
+                            sourcePath: sourceRel,
+                            originalPath: fp,
+                            docName: finalDocName,
+                            addedAt: isoNow(),
+                        };
+                        const reg = readRegistry();
+                        reg[fileHash] = entry;
+                        writeRegistry(reg);
+
+                        ctx.ui.notify(
+                            `Added: ${fp} → ${finalFilename}`,
+                            "info",
+                        );
+                        const prompt = buildCompilePrompt(
+                            finalFilename,
+                            finalDocName,
+                            content,
+                        );
+                        pi.sendUserMessage(prompt);
+                        continue;
+                    }
+
+                    const filename = `${docName}.md`;
+
+                    // Write source file
+                    let sourceRel: string;
+                    try {
+                        const wsc = writeSourceContent(filename, content);
+                        sourceRel = wsc.destRel;
+                    } catch (e: any) {
+                        ctx.ui.notify(
+                            `Failed to save source: ${e.message}`,
+                            "error",
+                        );
+                        continue;
+                    }
+
+                    // Add to registry
+                    const entry: RegistryEntry = {
+                        name: filename,
+                        sourcePath: sourceRel,
+                        originalPath: fp,
+                        docName,
+                        addedAt: isoNow(),
+                    };
+                    const reg = readRegistry();
+                    reg[fileHash] = entry;
+                    writeRegistry(reg);
+
+                    ctx.ui.notify(
+                        `Added: ${fp} → ${filename}`,
+                        "info",
+                    );
+
+                    const prompt = buildCompilePrompt(filename, docName, content);
+                    pi.sendUserMessage(prompt);
+                    continue;
+                }
+
+                // ── File branch ─────────────────────────────────────
                 const absPath = resolvePath(fp, cwd);
 
                 // Validate file

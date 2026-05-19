@@ -147,6 +147,22 @@ export function copySource(absPath: string): {
     return { destRel: `source/${name}`, destAbs };
 }
 
+/** Write raw markdown content directly into source/ (for URL-fetched docs).
+ *  Throws if a file with the same name already exists. */
+export function writeSourceContent(
+    filename: string,
+    content: string,
+): { destRel: string; destAbs: string } {
+    const destAbs = path.join(SOURCE_DIR, filename);
+    if (fs.existsSync(destAbs)) {
+        throw new Error(
+            `A file named "${filename}" already exists in the KB source/ directory.`,
+        );
+    }
+    fs.writeFileSync(destAbs, content, "utf-8");
+    return { destRel: `source/${filename}`, destAbs };
+}
+
 /** Read source file content (full text). */
 export function readSource(destRel: string): string {
     return fs.readFileSync(path.join(KB_ROOT, destRel), "utf-8");
