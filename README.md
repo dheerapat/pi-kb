@@ -36,6 +36,24 @@ pi install git:github.com/dheerapat/pi-kb
     └── concepts/         # Cross-document topic synthesis
 ```
 
+## Web Page Compatibility
+`/kb-add` fetches pages using a plain HTTP request and converts the raw HTML to Markdown. This works well for static or server-rendered pages but will produce thin or empty results for JavaScript-heavy sites, since no browser or JS engine is involved.
+
+**Works well:**
+- Documentation sites (plain HTML, SSG output)
+- Wikipedia, blog posts, news articles
+- GitHub READMEs and rendered markdown pages
+- Most technical references and man pages
+
+**Likely to fail or produce poor output:**
+
+- Single-page applications (React, Vue, Angular)
+- Pages that require login or session cookies
+- Sites behind Cloudflare or bot-detection challenges
+- Content loaded via infinite scroll or lazy fetch
+
+If a page produces an empty or garbled result, try finding a static mirror, an archived version at web.archive.org, or export the content manually as a `.md` file and use `/kb-add <file.md>` instead.
+
 ## Query from anywhere
 The knowledge base lives in `~/.pi/agent/kb/` — a fixed location in your home directory, not inside any project or repository. Once you've compiled documents, you can run `/kb-query` from any directory on your machine. There's no need to be inside the repo where the source files originally came from.
 
