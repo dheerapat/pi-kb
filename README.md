@@ -15,7 +15,7 @@ pi install git:github.com/dheeto/pi-kb
 /kb-add @file.md         Pi file autocomplete works (strips @ prefix)
 /kb-query <question>     Ask a question against the knowledge base
 /kb-list                 List all documents and concepts
-/kb-status                Show knowledge base stats
+/kb-status               Show knowledge base stats
 /kb-remove <docName>     Remove a document and clean up wiki pages
 ```
 
