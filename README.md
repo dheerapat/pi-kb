@@ -36,6 +36,22 @@ pi install git:github.com/dheerapat/pi-kb
     └── concepts/         # Cross-document topic synthesis
 ```
 
+## Query from anywhere
+The knowledge base lives in `~/.pi/agent/kb/` — a fixed location in your home directory, not inside any project or repository. Once you've compiled documents, you can run `/kb-query` from any directory on your machine. There's no need to be inside the repo where the source files originally came from.
+
+## Version controlling your KB
+The `~/.pi/agent/kb/` folder is plain files — `registry.json` and markdown — so it's easy to track with Git if you want history, backups, or to sync across machines.
+
+```bash
+cd ~/.pi/agent/kb
+git init
+echo "source/" >> .gitignore   # optionally skip raw source copies
+git add .
+git commit -m "initial kb snapshot"
+```
+
+From there, commit whenever you add documents, push to a private remote to back up or share the compiled wiki, and pull on another machine to restore it. Since `/kb-add` deduplicates via `registry.json`, the state will be consistent as long as the registry and wiki are in sync.
+
 ## Requirements
 
 - pi coding agent
