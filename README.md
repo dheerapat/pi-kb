@@ -5,7 +5,7 @@ A pi extension that compiles markdown documents into a structured, interlinked w
 ## Install
 
 ```bash
-pi install git:github.com/dheeto/pi-kb
+pi install git:github.com/dheerapat/pi-kb
 ```
 
 ## Usage
