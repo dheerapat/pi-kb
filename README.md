@@ -30,9 +30,9 @@ pi install git:github.com/dheerapat/pi-kb
 ├── registry.json         # Hash-based dedup tracking
 ├── source/               # Original file copies
 └── wiki/
-    ├── index.md           # KB overview with one-liner entries
-    ├── summaries/          # Per-document summaries
-    └── concepts/           # Cross-document topic synthesis
+    ├── index.md          # KB overview with one-liner entries
+    ├── summaries/        # Per-document summaries
+    └── concepts/         # Cross-document topic synthesis
 ```
 
 ## Requirements
