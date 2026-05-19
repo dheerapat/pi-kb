@@ -227,8 +227,7 @@ export default function (pi: ExtensionAPI) {
             const concepts = listConcepts();
             const reg = readRegistry();
 
-            // Build a notification message (pi doesn't have a markdown widget,
-            // so we use notify for now — the LLM can also be asked to show it)
+            // Build a notification message
             const lines: string[] = [];
 
             if (summaries.length === 0 && concepts.length === 0) {
@@ -264,8 +263,8 @@ export default function (pi: ExtensionAPI) {
                 }
             }
 
-            // Send as user message so it renders in the TUI
-            pi.sendUserMessage(lines.join("\n"));
+            // Display as notification without injecting into LLM session
+            ctx.ui.notify(lines.join("\n"), "info");
         },
     });
 
@@ -299,7 +298,7 @@ export default function (pi: ExtensionAPI) {
                 `  Last add: ${lastEntry ? `${lastEntry.name} (${lastEntry.addedAt.slice(0, 10)})` : "never"}`,
             ];
 
-            pi.sendUserMessage(lines.join("\n"));
+            ctx.ui.notify(lines.join("\n"), "info");
         },
     });
 
