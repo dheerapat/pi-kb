@@ -832,7 +832,7 @@ export default function (pi: ExtensionAPI) {
             const conceptLines: string[] = [];
 
             for (const entry of params.entries) {
-                const line = `- [[${entry.type}s/${entry.slug}]] — ${entry.brief}`;
+                const line = `- [[${entry.type}/${entry.slug}]] — ${entry.brief}`;
                 if (entry.type === "summary") {
                     docLines.push(line);
                 } else {
