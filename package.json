@@ -2,10 +2,17 @@
   "name": "pi-kb",
   "version": "0.1.0",
   "description": "A pi-native knowledge base extension — compile markdown documents into a structured, interlinked wiki using your LLM",
-  "keywords": ["pi-package", "knowledge-base", "wiki", "llm"],
+  "keywords": [
+    "pi-package",
+    "knowledge-base",
+    "wiki",
+    "llm"
+  ],
   "license": "MIT",
   "pi": {
-    "extensions": ["./extensions/kb"]
+    "extensions": [
+      "./extensions/kb"
+    ]
   },
   "dependencies": {
     "@kreuzberg/html-to-markdown-node": "^3.4.0",
