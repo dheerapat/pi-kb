@@ -28,6 +28,8 @@ import {
     hashFile,
     isInRegistry,
     isDocNameUsed,
+    isUrlInRegistry,
+    findByUrl,
     copySource,
     writeSourceContent,
     readIndex,
@@ -257,10 +259,10 @@ export default function (pi: ExtensionAPI) {
                     const content = converted.content;
                     const docName = docNameFromUrl(fp, converted.title);
 
-                    // Dedup by content hash
+                    // Dedup by URL (content hashing unreliable for dynamic pages)
                     const fileHash = hashContent(content);
-                    if (isInRegistry(fileHash)) {
-                        const existing = readRegistry()[fileHash];
+                    if (isUrlInRegistry(fp)) {
+                        const existing = findByUrl(fp)!;
                         ctx.ui.notify(
                             `Already in KB: ${fp} (added ${existing.addedAt.slice(0, 10)})`,
                             "warning",

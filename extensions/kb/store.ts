@@ -119,6 +119,19 @@ export function isDocNameUsed(docName: string): boolean {
     return Object.values(reg).some((e) => e.docName === docName);
 }
 
+/** Check if a URL is already in the registry by originalPath.
+ *  Content hashing is unreliable for web pages (dynamic elements). */
+export function isUrlInRegistry(url: string): boolean {
+    const reg = readRegistry();
+    return Object.values(reg).some((e) => e.originalPath === url);
+}
+
+/** Find a registry entry by URL (originalPath). Returns null if not found. */
+export function findByUrl(url: string): RegistryEntry | null {
+    const reg = readRegistry();
+    return Object.values(reg).find((e) => e.originalPath === url) ?? null;
+}
+
 /** Check if a file has been indexed (by content hash). */
 export function findInRegistry(hash: string): RegistryEntry | null {
     const reg = readRegistry();
