@@ -30,6 +30,7 @@ import {
     isDocNameUsed,
     isUrlInRegistry,
     findByUrl,
+    normalizeUrl,
     copySource,
     writeSourceContent,
     readIndex,
@@ -301,10 +302,11 @@ export default function (pi: ExtensionAPI) {
                             continue;
                         }
 
+                        const normalizedUrl = normalizeUrl(fp);
                         const entry: RegistryEntry = {
                             name: finalFilename,
                             sourcePath: sourceRel,
-                            originalPath: fp,
+                            originalPath: normalizedUrl,
                             docName: finalDocName,
                             addedAt: isoNow(),
                         };
@@ -341,10 +343,11 @@ export default function (pi: ExtensionAPI) {
                     }
 
                     // Add to registry
+                    const normalizedUrl = normalizeUrl(fp);
                     const entry: RegistryEntry = {
                         name: filename,
                         sourcePath: sourceRel,
-                        originalPath: fp,
+                        originalPath: normalizedUrl,
                         docName,
                         addedAt: isoNow(),
                     };

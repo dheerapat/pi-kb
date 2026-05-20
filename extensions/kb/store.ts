@@ -119,17 +119,40 @@ export function isDocNameUsed(docName: string): boolean {
     return Object.values(reg).some((e) => e.docName === docName);
 }
 
+/** Normalize a URL for dedup comparison: strip trailing slash (unless root),
+ *  fragment, and default ports (443 for https, 80 for http). */
+export function normalizeUrl(url: string): string {
+    try {
+        const parsed = new URL(url);
+        parsed.hash = "";
+        if (parsed.pathname.length > 1 && parsed.pathname.endsWith("/")) {
+            parsed.pathname = parsed.pathname.slice(0, -1);
+        }
+        if (
+            (parsed.protocol === "https:" && parsed.port === "443") ||
+            (parsed.protocol === "http:" && parsed.port === "80")
+        ) {
+            parsed.port = "";
+        }
+        return parsed.toString();
+    } catch {
+        return url;
+    }
+}
+
 /** Check if a URL is already in the registry by originalPath.
- *  Content hashing is unreliable for web pages (dynamic elements). */
+ *  Normalizes URLs before comparison (trailing slash, fragment, default port). */
 export function isUrlInRegistry(url: string): boolean {
+    const normalized = normalizeUrl(url);
     const reg = readRegistry();
-    return Object.values(reg).some((e) => e.originalPath === url);
+    return Object.values(reg).some((e) => normalizeUrl(e.originalPath) === normalized);
 }
 
 /** Find a registry entry by URL (originalPath). Returns null if not found. */
 export function findByUrl(url: string): RegistryEntry | null {
+    const normalized = normalizeUrl(url);
     const reg = readRegistry();
-    return Object.values(reg).find((e) => e.originalPath === url) ?? null;
+    return Object.values(reg).find((e) => normalizeUrl(e.originalPath) === normalized) ?? null;
 }
 
 /** Check if a file has been indexed (by content hash). */
