@@ -1120,36 +1120,4 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // -----------------------------------------------------------------------
-  // session_start hook — report on all workspaces
-  // -----------------------------------------------------------------------
-
-  pi.on("session_start", async (_event, _ctx) => {
-    const defExists = kbExists();
-    const named = listWorkspaces();
-
-    if (!defExists && named.length === 0) return;
-
-    const parts: string[] = [];
-
-    if (defExists) {
-      const s = listSummaries();
-      const c = listConcepts();
-      if (s.length > 0 || c.length > 0) {
-        parts.push(`default(${s.length}d/${c.length}c)`);
-      } else {
-        parts.push("default(empty)");
-      }
-    }
-
-    for (const ws of named) {
-      const s = listSummaries(ws);
-      const c = listConcepts(ws);
-      parts.push(`${ws}(${s.length}d/${c.length}c)`);
-    }
-
-    if (parts.length > 0) {
-      console.log(`[kb] Loaded: ${parts.join(", ")}`);
-    }
-  });
 }
