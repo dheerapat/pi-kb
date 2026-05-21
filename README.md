@@ -115,9 +115,3 @@ From there, commit whenever you add documents, push to a private remote to back 
 ## Requirements
 
 - pi coding agent
-- A tool-capable LLM (Anthropic, OpenAI, Google, etc.)
-- Node.js 20+
-
-## License
-
-MIT
