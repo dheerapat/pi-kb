@@ -2,7 +2,14 @@
  * store.ts — File I/O layer for the pi-native KB extension.
  *
  * All paths are relative to KB_ROOT (~/.pi/agent/kb/).
- * Handles directory creation, registry, source copying, wiki read/write.
+ * Handles workspace resolution, directory creation, registry, source
+ * copying, and wiki read/write.
+ *
+ * Workspaces:
+ *   - The KB root (~/.pi/agent/kb/) is the "default" workspace.
+ *   - Named workspaces live under ~/.pi/agent/kb/workspaces/<name>/.
+ *   - Every public function accepts an optional `workspace` parameter.
+ *     Pass a string for a named workspace; omit/undefined for default.
  */
 
 import * as fs from "node:fs";
@@ -11,16 +18,59 @@ import * as crypto from "node:crypto";
 import { homedir } from "node:os";
 
 // ---------------------------------------------------------------------------
-// Paths
+// Paths (default workspace)
 // ---------------------------------------------------------------------------
 
 export const KB_ROOT = path.join(homedir(), ".pi", "agent", "kb");
-export const REGISTRY_PATH = path.join(KB_ROOT, "registry.json");
-export const SOURCE_DIR = path.join(KB_ROOT, "source");
-export const WIKI_DIR = path.join(KB_ROOT, "wiki");
-export const SUMMARIES_DIR = path.join(WIKI_DIR, "summaries");
-export const CONCEPTS_DIR = path.join(WIKI_DIR, "concepts");
-export const INDEX_PATH = path.join(WIKI_DIR, "index.md");
+export const WORKSPACES_DIR = path.join(KB_ROOT, "workspaces");
+
+// ---------------------------------------------------------------------------
+// Workspace path resolution
+// ---------------------------------------------------------------------------
+
+export interface WorkspacePaths {
+  root: string;
+  registryPath: string;
+  sourceDir: string;
+  wikiDir: string;
+  summariesDir: string;
+  conceptsDir: string;
+  indexPath: string;
+}
+
+/** Resolve a workspace name to its full directory structure.
+ *  Passing undefined, null, "" or "default" returns the default workspace. */
+export function getWorkspaceRoot(name?: string): WorkspacePaths {
+  const base =
+    name && name !== "default"
+      ? path.join(WORKSPACES_DIR, name)
+      : KB_ROOT;
+
+  return {
+    root: base,
+    registryPath: path.join(base, "registry.json"),
+    sourceDir: path.join(base, "source"),
+    wikiDir: path.join(base, "wiki"),
+    summariesDir: path.join(base, "wiki", "summaries"),
+    conceptsDir: path.join(base, "wiki", "concepts"),
+    indexPath: path.join(base, "wiki", "index.md"),
+  };
+}
+
+/** List all named workspaces (excludes "default"). */
+export function listWorkspaces(): string[] {
+  if (!fs.existsSync(WORKSPACES_DIR)) return [];
+  return fs
+    .readdirSync(WORKSPACES_DIR, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+}
+
+/** Check if a named workspace exists. */
+export function workspaceExists(name: string): boolean {
+  if (!name || name === "default") return kbExists();
+  return fs.existsSync(path.join(WORKSPACES_DIR, name));
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,7 +79,7 @@ export const INDEX_PATH = path.join(WIKI_DIR, "index.md");
 export interface RegistryEntry {
   /** Original filename (e.g. "architecture.md") */
   name: string;
-  /** Path to the copy in source/ (relative to KB_ROOT) */
+  /** Path to the copy in source/ (relative to workspace root) */
   sourcePath: string;
   /** Original absolute path where the file came from */
   originalPath: string;
@@ -54,26 +104,34 @@ export interface ConceptInfo {
 // Directory setup
 // ---------------------------------------------------------------------------
 
-/** Create the full KB directory tree if it doesn't exist. Returns true if
- *  this was a first-time creation (the KB root was missing). */
-export function ensureKbDir(): boolean {
-  const isNew = !fs.existsSync(KB_ROOT);
-  fs.mkdirSync(KB_ROOT, { recursive: true });
-  fs.mkdirSync(SOURCE_DIR, { recursive: true });
-  fs.mkdirSync(SUMMARIES_DIR, { recursive: true });
-  fs.mkdirSync(CONCEPTS_DIR, { recursive: true });
-  if (!fs.existsSync(REGISTRY_PATH)) {
-    fs.writeFileSync(REGISTRY_PATH, JSON.stringify({}, null, 2), "utf-8");
+/** Create the full KB directory tree for a workspace if it doesn't exist.
+ *  Returns true if this was a first-time creation (the workspace root was missing). */
+export function ensureKbDir(workspace?: string): boolean {
+  const wp = getWorkspaceRoot(workspace);
+  const isNew = !fs.existsSync(wp.root);
+
+  fs.mkdirSync(wp.root, { recursive: true });
+  fs.mkdirSync(wp.sourceDir, { recursive: true });
+  fs.mkdirSync(wp.summariesDir, { recursive: true });
+  fs.mkdirSync(wp.conceptsDir, { recursive: true });
+
+  if (!fs.existsSync(wp.registryPath)) {
+    fs.writeFileSync(wp.registryPath, JSON.stringify({}, null, 2), "utf-8");
   }
-  if (!fs.existsSync(INDEX_PATH)) {
-    writeIndex("# Knowledge Base Index\n\n## Documents\n\n## Concepts\n");
+  if (!fs.existsSync(wp.indexPath)) {
+    fs.writeFileSync(
+      wp.indexPath,
+      "# Knowledge Base Index\n\n## Documents\n\n## Concepts\n",
+      "utf-8",
+    );
   }
   return isNew;
 }
 
-/** True if the KB has been initialized (the root dir exists). */
-export function kbExists(): boolean {
-  return fs.existsSync(KB_ROOT);
+/** True if the workspace has been initialized (its root dir exists). */
+export function kbExists(workspace?: string): boolean {
+  const wp = getWorkspaceRoot(workspace);
+  return fs.existsSync(wp.root);
 }
 
 // ---------------------------------------------------------------------------
@@ -93,9 +151,10 @@ export function hashFile(filePath: string): string {
 // Registry
 // ---------------------------------------------------------------------------
 
-export function readRegistry(): Registry {
-  if (!fs.existsSync(REGISTRY_PATH)) return {};
-  const raw = fs.readFileSync(REGISTRY_PATH, "utf-8");
+export function readRegistry(workspace?: string): Registry {
+  const wp = getWorkspaceRoot(workspace);
+  if (!fs.existsSync(wp.registryPath)) return {};
+  const raw = fs.readFileSync(wp.registryPath, "utf-8");
   try {
     return JSON.parse(raw) as Registry;
   } catch {
@@ -103,19 +162,20 @@ export function readRegistry(): Registry {
   }
 }
 
-export function writeRegistry(registry: Registry): void {
-  fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2), "utf-8");
+export function writeRegistry(registry: Registry, workspace?: string): void {
+  const wp = getWorkspaceRoot(workspace);
+  fs.writeFileSync(wp.registryPath, JSON.stringify(registry, null, 2), "utf-8");
 }
 
 /** Check if hash is already in registry. */
-export function isInRegistry(hash: string): boolean {
-  const reg = readRegistry();
+export function isInRegistry(hash: string, workspace?: string): boolean {
+  const reg = readRegistry(workspace);
   return hash in reg;
 }
 
 /** Check if a docName (slug) is already used in registry. */
-export function isDocNameUsed(docName: string): boolean {
-  const reg = readRegistry();
+export function isDocNameUsed(docName: string, workspace?: string): boolean {
+  const reg = readRegistry(workspace);
   return Object.values(reg).some((e) => e.docName === docName);
 }
 
@@ -142,18 +202,18 @@ export function normalizeUrl(url: string): string {
 
 /** Check if a URL is already in the registry by originalPath.
  *  Normalizes URLs before comparison (trailing slash, fragment, default port). */
-export function isUrlInRegistry(url: string): boolean {
+export function isUrlInRegistry(url: string, workspace?: string): boolean {
   const normalized = normalizeUrl(url);
-  const reg = readRegistry();
+  const reg = readRegistry(workspace);
   return Object.values(reg).some(
     (e) => normalizeUrl(e.originalPath) === normalized,
   );
 }
 
 /** Find a registry entry by URL (originalPath). Returns null if not found. */
-export function findByUrl(url: string): RegistryEntry | null {
+export function findByUrl(url: string, workspace?: string): RegistryEntry | null {
   const normalized = normalizeUrl(url);
-  const reg = readRegistry();
+  const reg = readRegistry(workspace);
   return (
     Object.values(reg).find(
       (e) => normalizeUrl(e.originalPath) === normalized,
@@ -161,9 +221,9 @@ export function findByUrl(url: string): RegistryEntry | null {
   );
 }
 
-/** Check if a file has been indexed (by content hash). */
-export function findInRegistry(hash: string): RegistryEntry | null {
-  const reg = readRegistry();
+/** Find a registry entry by content hash. */
+export function findInRegistry(hash: string, workspace?: string): RegistryEntry | null {
+  const reg = readRegistry(workspace);
   return reg[hash] ?? null;
 }
 
@@ -171,14 +231,15 @@ export function findInRegistry(hash: string): RegistryEntry | null {
 // Source files
 // ---------------------------------------------------------------------------
 
-/** Copy a source file into source/. Returns the relative path in the kb.
+/** Copy a source file into the workspace source/ dir. Returns relative path.
  *  Throws if a file with the same name already exists in source/. */
-export function copySource(absPath: string): {
-  destRel: string;
-  destAbs: string;
-} {
+export function copySource(
+  absPath: string,
+  workspace?: string,
+): { destRel: string; destAbs: string } {
+  const wp = getWorkspaceRoot(workspace);
   const name = path.basename(absPath);
-  const destAbs = path.join(SOURCE_DIR, name);
+  const destAbs = path.join(wp.sourceDir, name);
   if (fs.existsSync(destAbs)) {
     throw new Error(
       `A file named "${name}" already exists in the KB source/ directory.\n` +
@@ -189,13 +250,15 @@ export function copySource(absPath: string): {
   return { destRel: `source/${name}`, destAbs };
 }
 
-/** Write raw markdown content directly into source/ (for URL-fetched docs).
- *  Throws if a file with the same name already exists. */
+/** Write raw markdown content directly into the workspace source/ dir
+ *  (for URL-fetched docs). Throws if a file with the same name already exists. */
 export function writeSourceContent(
   filename: string,
   content: string,
+  workspace?: string,
 ): { destRel: string; destAbs: string } {
-  const destAbs = path.join(SOURCE_DIR, filename);
+  const wp = getWorkspaceRoot(workspace);
+  const destAbs = path.join(wp.sourceDir, filename);
   if (fs.existsSync(destAbs)) {
     throw new Error(
       `A file named "${filename}" already exists in the KB source/ directory.`,
@@ -205,39 +268,44 @@ export function writeSourceContent(
   return { destRel: `source/${filename}`, destAbs };
 }
 
-/** Read source file content (full text). */
-export function readSource(destRel: string): string {
-  return fs.readFileSync(path.join(KB_ROOT, destRel), "utf-8");
+/** Read source file content (full text). destRel is relative to workspace root. */
+export function readSource(destRel: string, workspace?: string): string {
+  const wp = getWorkspaceRoot(workspace);
+  return fs.readFileSync(path.join(wp.root, destRel), "utf-8");
 }
 
 // ---------------------------------------------------------------------------
 // Index
 // ---------------------------------------------------------------------------
 
-export function readIndex(): string {
-  if (!fs.existsSync(INDEX_PATH)) return "";
-  return fs.readFileSync(INDEX_PATH, "utf-8");
+export function readIndex(workspace?: string): string {
+  const wp = getWorkspaceRoot(workspace);
+  if (!fs.existsSync(wp.indexPath)) return "";
+  return fs.readFileSync(wp.indexPath, "utf-8");
 }
 
-export function writeIndex(content: string): void {
-  fs.mkdirSync(WIKI_DIR, { recursive: true });
-  fs.writeFileSync(INDEX_PATH, content, "utf-8");
+export function writeIndex(content: string, workspace?: string): void {
+  const wp = getWorkspaceRoot(workspace);
+  fs.mkdirSync(wp.wikiDir, { recursive: true });
+  fs.writeFileSync(wp.indexPath, content, "utf-8");
 }
 
 // ---------------------------------------------------------------------------
 // Summaries
 // ---------------------------------------------------------------------------
 
-export function listSummaries(): string[] {
-  if (!fs.existsSync(SUMMARIES_DIR)) return [];
+export function listSummaries(workspace?: string): string[] {
+  const wp = getWorkspaceRoot(workspace);
+  if (!fs.existsSync(wp.summariesDir)) return [];
   return fs
-    .readdirSync(SUMMARIES_DIR)
+    .readdirSync(wp.summariesDir)
     .filter((f) => f.endsWith(".md"))
     .map((f) => f.replace(/\.md$/, ""));
 }
 
-export function readSummary(docName: string): string | null {
-  const p = path.join(SUMMARIES_DIR, `${docName}.md`);
+export function readSummary(docName: string, workspace?: string): string | null {
+  const wp = getWorkspaceRoot(workspace);
+  const p = path.join(wp.summariesDir, `${docName}.md`);
   if (!fs.existsSync(p)) return null;
   return fs.readFileSync(p, "utf-8");
 }
@@ -247,8 +315,10 @@ export function writeSummary(
   content: string,
   originalName: string,
   addedAt: string,
+  workspace?: string,
 ): void {
-  fs.mkdirSync(SUMMARIES_DIR, { recursive: true });
+  const wp = getWorkspaceRoot(workspace);
+  fs.mkdirSync(wp.summariesDir, { recursive: true });
   const frontmatter = [
     "---",
     `source: "${originalName}"`,
@@ -257,23 +327,25 @@ export function writeSummary(
     "---",
   ].join("\n");
   const full = frontmatter + "\n\n" + content;
-  fs.writeFileSync(path.join(SUMMARIES_DIR, `${docName}.md`), full, "utf-8");
+  fs.writeFileSync(path.join(wp.summariesDir, `${docName}.md`), full, "utf-8");
 }
 
 // ---------------------------------------------------------------------------
 // Concepts
 // ---------------------------------------------------------------------------
 
-export function listConcepts(): string[] {
-  if (!fs.existsSync(CONCEPTS_DIR)) return [];
+export function listConcepts(workspace?: string): string[] {
+  const wp = getWorkspaceRoot(workspace);
+  if (!fs.existsSync(wp.conceptsDir)) return [];
   return fs
-    .readdirSync(CONCEPTS_DIR)
+    .readdirSync(wp.conceptsDir)
     .filter((f) => f.endsWith(".md"))
     .map((f) => f.replace(/\.md$/, ""));
 }
 
-export function readConcept(slug: string): ConceptInfo | null {
-  const p = path.join(CONCEPTS_DIR, `${slug}.md`);
+export function readConcept(slug: string, workspace?: string): ConceptInfo | null {
+  const wp = getWorkspaceRoot(workspace);
+  const p = path.join(wp.conceptsDir, `${slug}.md`);
   if (!fs.existsSync(p)) return null;
   const raw = fs.readFileSync(p, "utf-8");
 
@@ -316,8 +388,10 @@ export function writeConcept(
   slug: string,
   content: string,
   sources: string[],
+  workspace?: string,
 ): void {
-  fs.mkdirSync(CONCEPTS_DIR, { recursive: true });
+  const wp = getWorkspaceRoot(workspace);
+  fs.mkdirSync(wp.conceptsDir, { recursive: true });
   const now = new Date().toISOString();
   const sourcesYaml = "[" + sources.map((s) => `"${s}"`).join(", ") + "]";
   const frontmatter = [
@@ -327,20 +401,22 @@ export function writeConcept(
     "---",
   ].join("\n");
   const full = frontmatter + "\n\n" + content;
-  fs.writeFileSync(path.join(CONCEPTS_DIR, `${slug}.md`), full, "utf-8");
+  fs.writeFileSync(path.join(wp.conceptsDir, `${slug}.md`), full, "utf-8");
 }
 
 /** Delete a concept page. Returns true if it existed. */
-export function deleteConcept(slug: string): boolean {
-  const p = path.join(CONCEPTS_DIR, `${slug}.md`);
+export function deleteConcept(slug: string, workspace?: string): boolean {
+  const wp = getWorkspaceRoot(workspace);
+  const p = path.join(wp.conceptsDir, `${slug}.md`);
   if (!fs.existsSync(p)) return false;
   fs.unlinkSync(p);
   return true;
 }
 
 /** Delete a summary page. Returns true if it existed. */
-export function deleteSummary(docName: string): boolean {
-  const p = path.join(SUMMARIES_DIR, `${docName}.md`);
+export function deleteSummary(docName: string, workspace?: string): boolean {
+  const wp = getWorkspaceRoot(workspace);
+  const p = path.join(wp.summariesDir, `${docName}.md`);
   if (!fs.existsSync(p)) return false;
   fs.unlinkSync(p);
   return true;
@@ -357,21 +433,21 @@ export interface WikiDump {
 }
 
 /** Read everything from the wiki. */
-export function dumpWiki(): WikiDump {
+export function dumpWiki(workspace?: string): WikiDump {
   const summaries: Record<string, string> = {};
-  for (const name of listSummaries()) {
-    const s = readSummary(name);
+  for (const name of listSummaries(workspace)) {
+    const s = readSummary(name, workspace);
     if (s) summaries[name] = s;
   }
 
   const concepts: Record<string, string> = {};
-  for (const slug of listConcepts()) {
-    const c = readConcept(slug);
+  for (const slug of listConcepts(workspace)) {
+    const c = readConcept(slug, workspace);
     if (c) concepts[slug] = c.body;
   }
 
   return {
-    index: readIndex(),
+    index: readIndex(workspace),
     summaries,
     concepts,
   };

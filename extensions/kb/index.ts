@@ -2,7 +2,8 @@
  * index.ts — Entry point for the pi-native KB extension.
  *
  * Registers:
- *  - Commands: /kb-add, /kb-query, /kb-list, /kb-status, /kb-remove
+ *  - Commands: /kb-init, /kb-workspaces, /kb-add, /kb-query,
+ *              /kb-list, /kb-status, /kb-remove
  *  - Tools: kb_read_index, kb_list_concepts, kb_read_concept,
  *           kb_read_summary, kb_write_summary, kb_write_concept,
  *           kb_update_index, kb_delete_concept, kb_delete_summary
@@ -22,8 +23,11 @@ import * as http from "node:http";
 
 import {
   KB_ROOT,
+  WORKSPACES_DIR,
   ensureKbDir,
   kbExists,
+  workspaceExists,
+  listWorkspaces,
   hashContent,
   hashFile,
   isInRegistry,
@@ -103,6 +107,28 @@ function docNameFromUrl(url: string, metadataTitle?: string | null): string {
   } catch {
     return slugify(url).slice(0, 40);
   }
+}
+
+/**
+ * Parse -w / --workspace flag from raw command args.
+ * Returns the workspace name (if any) and the remaining args string.
+ */
+function parseWorkspaceArgs(rawArgs: string): {
+  workspace?: string;
+  rest: string;
+} {
+  let rest = rawArgs.trim();
+
+  // Strip pi's @ prefix from file arguments before parsing flags
+  // (the @ is only on file paths, not on -w)
+  const match = rest.match(/(?:^|\s)(?:-w|--workspace)\s+(\S+)/);
+  if (match) {
+    const workspace = match[1];
+    rest = rest.replace(match[0], " ").replace(/\s+/g, " ").trim();
+    return { workspace, rest };
+  }
+
+  return { rest };
 }
 
 /**
@@ -207,34 +233,136 @@ function httpGet(targetUrl: string, maxRedirects = 5): Promise<string> {
 
 export default function (pi: ExtensionAPI) {
   // -----------------------------------------------------------------------
-  // Commands
+  // /kb-init <workspace-name>
   // -----------------------------------------------------------------------
 
-  // /kb-add <paths...>
-  pi.registerCommand("kb-add", {
-    description: "Add markdown files or URLs to the knowledge base",
+  pi.registerCommand("kb-init", {
+    description:
+      "Create a new named workspace under kb/workspaces/ (e.g. /kb-init myproject)",
     handler: async (args, ctx) => {
       if (!args || !args.trim()) {
-        ctx.ui.notify("Usage: /kb-add <file.md> [file2.md ...]", "warning");
+        ctx.ui.notify(
+          "Usage: /kb-init <workspace-name>\n\n" +
+            'Creates a named workspace. Use -w <name> on other commands to target it.\n' +
+            "Example: /kb-init myproject",
+          "warning",
+        );
         return;
       }
 
-      const filePaths = args
+      const name = slugify(args.trim());
+      if (!name) {
+        ctx.ui.notify("Invalid workspace name. Use letters, numbers, hyphens.", "error");
+        return;
+      }
+
+      if (workspaceExists(name)) {
+        ctx.ui.notify(
+          `Workspace "${name}" already exists. Use /kb-add -w ${name} <file> to add documents.`,
+          "warning",
+        );
+        return;
+      }
+
+      const isNew = ensureKbDir(name);
+      ctx.ui.notify(
+        `Workspace created: ${name}\n` +
+          `  Path: ${WORKSPACES_DIR}/${name}/\n\n` +
+          `Usage:\n` +
+          `  /kb-add -w ${name} <file>   Add documents\n` +
+          `  /kb-query -w ${name} <q>    Search this workspace\n` +
+          `  /kb-workspaces              List all workspaces`,
+        "info",
+      );
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // /kb-workspaces
+  // -----------------------------------------------------------------------
+
+  pi.registerCommand("kb-workspaces", {
+    description: "List all workspaces and their stats",
+    handler: async (_args, ctx) => {
+      const lines: string[] = ["## Workspaces", ""];
+
+      // Default workspace
+      const defExists = kbExists();
+      if (defExists) {
+        const defSummaries = listSummaries();
+        const defConcepts = listConcepts();
+        const defReg = readRegistry();
+        const defSrcs = Object.keys(defReg).length;
+        const defLabel = defSrcs > 0 || defSummaries.length > 0
+          ? `${defSrcs} sources, ${defSummaries.length} docs, ${defConcepts.length} concepts`
+          : "empty";
+        lines.push(`  **default** — ${defLabel}`);
+      } else {
+        lines.push("  **default** — not initialized");
+      }
+
+      // Named workspaces
+      const named = listWorkspaces();
+      if (named.length === 0) {
+        lines.push("");
+        lines.push("No named workspaces. Use /kb-init <name> to create one.");
+      } else {
+        lines.push("");
+        for (const ws of named) {
+          const wSummaries = listSummaries(ws);
+          const wConcepts = listConcepts(ws);
+          const wReg = readRegistry(ws);
+          const wSrcs = Object.keys(wReg).length;
+          lines.push(
+            `  **${ws}** — ${wSrcs} sources, ${wSummaries.length} docs, ${wConcepts.length} concepts`,
+          );
+        }
+      }
+
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // /kb-add <paths...> [-w <workspace>]
+  // -----------------------------------------------------------------------
+
+  pi.registerCommand("kb-add", {
+    description:
+      "Add markdown files or URLs to the knowledge base. Use -w <name> for a named workspace.",
+    handler: async (args, ctx) => {
+      if (!args || !args.trim()) {
+        ctx.ui.notify(
+          "Usage: /kb-add <file.md> [file2.md ...] [-w <workspace>]",
+          "warning",
+        );
+        return;
+      }
+
+      const { workspace, rest } = parseWorkspaceArgs(args);
+
+      const filePaths = rest
         .split(/\s+/)
         .map((s) => s.trim().replace(/^@/, "")) // strip pi's @ prefix
         .filter(Boolean);
 
+      if (filePaths.length === 0) {
+        ctx.ui.notify("No files or URLs specified.", "warning");
+        return;
+      }
+
       const { cwd } = ctx;
+      const wsLabel = workspace ? ` [${workspace}]` : "";
 
       for (const fp of filePaths) {
         // ── URL branch ───────────────────────────────────────
         if (isUrl(fp)) {
-          ensureKbDir();
+          ensureKbDir(workspace);
 
           // Fetch & convert HTML → Markdown
           let converted: { content: string; title: string | null };
           try {
-            ctx.ui.notify(`Fetching: ${fp}`, "info");
+            ctx.ui.notify(`Fetching${wsLabel}: ${fp}`, "info");
             converted = await fetchAndConvert(fp);
           } catch (e: any) {
             ctx.ui.notify(`Failed to fetch ${fp}: ${e.message}`, "error");
@@ -246,22 +374,22 @@ export default function (pi: ExtensionAPI) {
 
           // Dedup by URL (content hashing unreliable for dynamic pages)
           const fileHash = hashContent(content);
-          if (isUrlInRegistry(fp)) {
-            const existing = findByUrl(fp)!;
+          if (isUrlInRegistry(fp, workspace)) {
+            const existing = findByUrl(fp, workspace)!;
             ctx.ui.notify(
-              `Already in KB: ${fp} (added ${existing.addedAt.slice(0, 10)})`,
+              `Already in KB${wsLabel}: ${fp} (added ${existing.addedAt.slice(0, 10)})`,
               "warning",
             );
             continue;
           }
 
           // Doc-name collision check
-          if (isDocNameUsed(docName)) {
+          if (isDocNameUsed(docName, workspace)) {
             // Append a suffix to make it unique
             const base = docName;
             let suffix = 2;
             let candidate = `${base}-${suffix}`;
-            while (isDocNameUsed(candidate)) {
+            while (isDocNameUsed(candidate, workspace)) {
               suffix++;
               candidate = `${base}-${suffix}`;
             }
@@ -276,7 +404,7 @@ export default function (pi: ExtensionAPI) {
             // Write source
             let sourceRel: string;
             try {
-              const wsc = writeSourceContent(finalFilename, content);
+              const wsc = writeSourceContent(finalFilename, content, workspace);
               sourceRel = wsc.destRel;
             } catch (e: any) {
               ctx.ui.notify(`Failed to save source: ${e.message}`, "error");
@@ -291,15 +419,16 @@ export default function (pi: ExtensionAPI) {
               docName: finalDocName,
               addedAt: isoNow(),
             };
-            const reg = readRegistry();
+            const reg = readRegistry(workspace);
             reg[fileHash] = entry;
-            writeRegistry(reg);
+            writeRegistry(reg, workspace);
 
-            ctx.ui.notify(`Added: ${fp} → ${finalFilename}`, "info");
+            ctx.ui.notify(`Added${wsLabel}: ${fp} → ${finalFilename}`, "info");
             const prompt = buildCompilePrompt(
               finalFilename,
               finalDocName,
               content,
+              workspace,
             );
             pi.sendUserMessage(prompt);
             continue;
@@ -310,7 +439,7 @@ export default function (pi: ExtensionAPI) {
           // Write source file
           let sourceRel: string;
           try {
-            const wsc = writeSourceContent(filename, content);
+            const wsc = writeSourceContent(filename, content, workspace);
             sourceRel = wsc.destRel;
           } catch (e: any) {
             ctx.ui.notify(`Failed to save source: ${e.message}`, "error");
@@ -326,13 +455,18 @@ export default function (pi: ExtensionAPI) {
             docName,
             addedAt: isoNow(),
           };
-          const reg = readRegistry();
+          const reg = readRegistry(workspace);
           reg[fileHash] = entry;
-          writeRegistry(reg);
+          writeRegistry(reg, workspace);
 
-          ctx.ui.notify(`Added: ${fp} → ${filename}`, "info");
+          ctx.ui.notify(`Added${wsLabel}: ${fp} → ${filename}`, "info");
 
-          const prompt = buildCompilePrompt(filename, docName, content);
+          const prompt = buildCompilePrompt(
+            filename,
+            docName,
+            content,
+            workspace,
+          );
           pi.sendUserMessage(prompt);
           continue;
         }
@@ -367,13 +501,13 @@ export default function (pi: ExtensionAPI) {
         const fileHash = hashFile(absPath);
 
         // Auto-create KB on first use
-        ensureKbDir();
+        ensureKbDir(workspace);
 
         // Dedup by hash
-        if (isInRegistry(fileHash)) {
-          const existing = readRegistry()[fileHash];
+        if (isInRegistry(fileHash, workspace)) {
+          const existing = readRegistry(workspace)[fileHash];
           ctx.ui.notify(
-            `Already in KB: ${fp} (added ${existing.addedAt.slice(0, 10)})`,
+            `Already in KB${wsLabel}: ${fp} (added ${existing.addedAt.slice(0, 10)})`,
             "warning",
           );
           continue;
@@ -384,7 +518,7 @@ export default function (pi: ExtensionAPI) {
         const docName = docNameFromFile(absPath);
 
         // Check if docName slug is taken
-        if (isDocNameUsed(docName)) {
+        if (isDocNameUsed(docName, workspace)) {
           ctx.ui.notify(
             `A document with slug "${docName}" already exists in the KB.\n` +
               `Rename your file to something unique before adding it.`,
@@ -396,7 +530,7 @@ export default function (pi: ExtensionAPI) {
         // Copy source
         let sourceRel: string;
         try {
-          const copied = copySource(absPath);
+          const copied = copySource(absPath, workspace);
           sourceRel = copied.destRel;
         } catch (e: any) {
           ctx.ui.notify(`Failed to copy source: ${e.message}`, "error");
@@ -411,59 +545,81 @@ export default function (pi: ExtensionAPI) {
           docName,
           addedAt: isoNow(),
         };
-        const reg = readRegistry();
+        const reg = readRegistry(workspace);
         reg[fileHash] = entry;
-        writeRegistry(reg);
+        writeRegistry(reg, workspace);
 
-        ctx.ui.notify(`Added: ${originalName}`, "info");
+        ctx.ui.notify(`Added${wsLabel}: ${originalName}`, "info");
 
         // Inject compile prompt into session
-        const prompt = buildCompilePrompt(originalName, docName, content);
+        const prompt = buildCompilePrompt(
+          originalName,
+          docName,
+          content,
+          workspace,
+        );
         pi.sendUserMessage(prompt);
       }
     },
   });
 
-  // /kb-query <question>
+  // -----------------------------------------------------------------------
+  // /kb-query <question> [-w <workspace>]
+  // -----------------------------------------------------------------------
+
   pi.registerCommand("kb-query", {
-    description: "Ask a question against the knowledge base",
+    description:
+      "Ask a question against the knowledge base. Use -w <name> for a named workspace.",
     handler: async (args, ctx) => {
-      if (!kbExists()) {
-        ctx.ui.notify("No knowledge base found. Use /kb-add first.", "warning");
+      const { workspace, rest } = parseWorkspaceArgs(args);
+
+      if (!kbExists(workspace)) {
+        const label = workspace ? `Workspace "${workspace}"` : "No knowledge base";
+        ctx.ui.notify(
+          `${label} found. Use /kb-init${workspace ? ` ${workspace}` : ""} first, or /kb-add to populate.`,
+          "warning",
+        );
         return;
       }
 
-      if (!args || !args.trim()) {
-        ctx.ui.notify("Usage: /kb-query <question>", "warning");
+      if (!rest) {
+        ctx.ui.notify("Usage: /kb-query <question> [-w <workspace>]", "warning");
         return;
       }
 
-      const question = args.trim();
-      const prompt = buildQueryPrompt(question);
+      const question = rest.trim();
+      const prompt = buildQueryPrompt(question, workspace);
       pi.sendUserMessage(prompt);
     },
   });
 
-  // /kb-list
+  // -----------------------------------------------------------------------
+  // /kb-list [-w <workspace>]
+  // -----------------------------------------------------------------------
+
   pi.registerCommand("kb-list", {
-    description: "List all documents and concepts in the knowledge base",
-    handler: async (_args, ctx) => {
-      if (!kbExists()) {
-        ctx.ui.notify("No knowledge base found.", "info");
+    description:
+      "List all documents and concepts in the knowledge base. Use -w <name> for a named workspace.",
+    handler: async (args, ctx) => {
+      const { workspace } = parseWorkspaceArgs(args);
+
+      if (!kbExists(workspace)) {
+        const label = workspace ? `Workspace "${workspace}"` : "No knowledge base";
+        ctx.ui.notify(`${label} found.`, "info");
         return;
       }
 
-      const summaries = listSummaries();
-      const concepts = listConcepts();
-      const reg = readRegistry();
+      const summaries = listSummaries(workspace);
+      const concepts = listConcepts(workspace);
+      const reg = readRegistry(workspace);
+      const wsLabel = workspace ? ` [${workspace}]` : "";
 
-      // Build a notification message
       const lines: string[] = [];
 
       if (summaries.length === 0 && concepts.length === 0) {
-        lines.push("KB is empty. Use /kb-add to add documents.");
+        lines.push(`KB${wsLabel} is empty. Use /kb-add to add documents.`);
       } else {
-        lines.push("## Knowledge Base");
+        lines.push(`## Knowledge Base${wsLabel}`);
         lines.push("");
 
         if (summaries.length > 0) {
@@ -482,40 +638,53 @@ export default function (pi: ExtensionAPI) {
         if (concepts.length > 0) {
           lines.push(`**Concepts (${concepts.length}):**`);
           for (const slug of concepts) {
-            const c = readConcept(slug);
+            const c = readConcept(slug, workspace);
             const srcs = c ? c.sources.join(", ") : "?";
             lines.push(`  - [[concept/${slug}]] (sources: ${srcs})`);
           }
         }
       }
 
-      // Display as notification without injecting into LLM session
       ctx.ui.notify(lines.join("\n"), "info");
     },
   });
 
-  // /kb-status
+  // -----------------------------------------------------------------------
+  // /kb-status [-w <workspace>]
+  // -----------------------------------------------------------------------
+
   pi.registerCommand("kb-status", {
-    description: "Show knowledge base statistics",
-    handler: async (_args, ctx) => {
-      if (!kbExists()) {
-        ctx.ui.notify("No knowledge base found.", "info");
+    description:
+      "Show knowledge base statistics. Use -w <name> for a named workspace.",
+    handler: async (args, ctx) => {
+      const { workspace } = parseWorkspaceArgs(args);
+
+      if (!kbExists(workspace)) {
+        const label = workspace ? `Workspace "${workspace}"` : "No knowledge base";
+        ctx.ui.notify(`${label} found.`, "info");
         return;
       }
 
-      const summaryCount = listSummaries().length;
-      const conceptCount = listConcepts().length;
-      const reg = readRegistry();
+      const summaryCount = listSummaries(workspace).length;
+      const conceptCount = listConcepts(workspace).length;
+      const reg = readRegistry(workspace);
       const regCount = Object.keys(reg).length;
+      const wsLabel = workspace ? ` [${workspace}]` : "";
 
       const lastEntry = Object.values(reg).sort(
-        (a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime(),
+        (a, b) =>
+          new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime(),
       )[0];
 
+      // Build path description
+      const rootPath = workspace
+        ? `${WORKSPACES_DIR}/${workspace}`
+        : KB_ROOT;
+
       const lines = [
-        "## KB Status",
+        `## KB Status${wsLabel}`,
         "",
-        `  Root: \`${KB_ROOT}\``,
+        `  Root: \`${rootPath}\``,
         `  Sources: ${regCount}`,
         `  Summaries: ${summaryCount}`,
         `  Concepts: ${conceptCount}`,
@@ -526,22 +695,32 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // /kb-remove <docName>
+  // -----------------------------------------------------------------------
+  // /kb-remove <docName> [-w <workspace>]
+  // -----------------------------------------------------------------------
+
   pi.registerCommand("kb-remove", {
-    description: "Remove a document from the knowledge base by docName",
+    description:
+      "Remove a document from the knowledge base by docName. Use -w <name> for a named workspace.",
     handler: async (args, ctx) => {
-      if (!kbExists()) {
-        ctx.ui.notify("No knowledge base found.", "warning");
+      const { workspace, rest } = parseWorkspaceArgs(args);
+
+      if (!kbExists(workspace)) {
+        const label = workspace ? `Workspace "${workspace}"` : "No knowledge base";
+        ctx.ui.notify(`${label} found.`, "warning");
         return;
       }
 
-      if (!args || !args.trim()) {
-        ctx.ui.notify("Usage: /kb-remove <docName>", "warning");
+      if (!rest) {
+        ctx.ui.notify(
+          "Usage: /kb-remove <docName> [-w <workspace>]",
+          "warning",
+        );
         return;
       }
 
-      const docName = args.trim();
-      const reg = readRegistry();
+      const docName = rest.trim();
+      const reg = readRegistry(workspace);
       const matches = Object.entries(reg).filter(
         ([_, e]) => e.docName === docName,
       );
@@ -555,20 +734,24 @@ export default function (pi: ExtensionAPI) {
       }
 
       const [hash, entry] = matches[0];
-      ctx.ui.notify(`Removing: ${entry.name} (${docName})`, "info");
+      const wsLabel = workspace ? ` [${workspace}]` : "";
+      ctx.ui.notify(`Removing${wsLabel}: ${entry.name} (${docName})`, "info");
 
       // Inject remove prompt into session
-      const prompt = buildRemovePrompt(docName, entry.name);
+      const prompt = buildRemovePrompt(docName, entry.name, workspace);
       pi.sendUserMessage(prompt);
 
       // Clean up registry immediately (the LLM handles wiki cleanup)
       delete reg[hash];
-      writeRegistry(reg);
+      writeRegistry(reg, workspace);
     },
   });
 
   // -----------------------------------------------------------------------
   // Tools (for LLM to use during compilation/query/removal)
+  //
+  // Every tool accepts an optional `workspace` parameter. The LLM receives
+  // the workspace name in the prompt and passes it through.
   // -----------------------------------------------------------------------
 
   // kb_read_index
@@ -577,10 +760,17 @@ export default function (pi: ExtensionAPI) {
     label: "Read KB Index",
     description:
       "Read the knowledge base index.md file. Shows all documents and concepts with brief descriptions.",
-    parameters: Type.Object({}),
-    async execute() {
+    parameters: Type.Object({
+      workspace: Type.Optional(
+        Type.String({
+          description: "Workspace name (omit for default)",
+        }),
+      ),
+    }),
+    async execute(_toolCallId, params) {
       const content =
-        readIndex() || "(index is empty — no documents or concepts yet)";
+        readIndex(params.workspace) ||
+        "(index is empty — no documents or concepts yet)";
       return {
         content: [{ type: "text" as const, text: content }],
         details: {},
@@ -593,9 +783,15 @@ export default function (pi: ExtensionAPI) {
     name: "kb_list_concepts",
     label: "List KB Concepts",
     description: "List all concept slugs in the knowledge base.",
-    parameters: Type.Object({}),
-    async execute() {
-      const slugs = listConcepts();
+    parameters: Type.Object({
+      workspace: Type.Optional(
+        Type.String({
+          description: "Workspace name (omit for default)",
+        }),
+      ),
+    }),
+    async execute(_toolCallId, params) {
+      const slugs = listConcepts(params.workspace);
       const text =
         slugs.length > 0
           ? slugs.map((s) => `- ${s}`).join("\n")
@@ -616,9 +812,14 @@ export default function (pi: ExtensionAPI) {
       slug: Type.String({
         description: "Concept slug (e.g. 'caching-strategy')",
       }),
+      workspace: Type.Optional(
+        Type.String({
+          description: "Workspace name (omit for default)",
+        }),
+      ),
     }),
     async execute(_toolCallId, params) {
-      const info = readConcept(params.slug);
+      const info = readConcept(params.slug, params.workspace);
       if (!info) {
         return {
           content: [
@@ -647,9 +848,14 @@ export default function (pi: ExtensionAPI) {
       docName: Type.String({
         description: "Document name slug (e.g. 'architecture')",
       }),
+      workspace: Type.Optional(
+        Type.String({
+          description: "Workspace name (omit for default)",
+        }),
+      ),
     }),
     async execute(_toolCallId, params) {
-      const text = readSummary(params.docName);
+      const text = readSummary(params.docName, params.workspace);
       if (!text) {
         return {
           content: [
@@ -686,16 +892,27 @@ export default function (pi: ExtensionAPI) {
       content: Type.String({
         description: "Full markdown summary (200-400 words)",
       }),
+      workspace: Type.Optional(
+        Type.String({
+          description: "Workspace name (omit for default)",
+        }),
+      ),
     }),
     async execute(_toolCallId, params) {
-      const reg = readRegistry();
+      const reg = readRegistry(params.workspace);
       const entry = Object.values(reg).find(
         (e) => e.docName === params.docName,
       );
       const originalName = entry?.name ?? `${params.docName}.md`;
       const addedAt = entry?.addedAt ?? isoNow();
 
-      writeSummary(params.docName, params.content, originalName, addedAt);
+      writeSummary(
+        params.docName,
+        params.content,
+        originalName,
+        addedAt,
+        params.workspace,
+      );
 
       // Update lastCompiledAt
       if (entry) {
@@ -705,7 +922,7 @@ export default function (pi: ExtensionAPI) {
         );
         if (hash) {
           reg[hash] = entry;
-          writeRegistry(reg);
+          writeRegistry(reg, params.workspace);
         }
       }
 
@@ -739,10 +956,15 @@ export default function (pi: ExtensionAPI) {
         description:
           "List of source filenames (e.g. ['architecture.md', 'design.md'])",
       }),
+      workspace: Type.Optional(
+        Type.String({
+          description: "Workspace name (omit for default)",
+        }),
+      ),
     }),
     async execute(_toolCallId, params) {
-      const existed = listConcepts().includes(params.slug);
-      writeConcept(params.slug, params.content, params.sources);
+      const existed = listConcepts(params.workspace).includes(params.slug);
+      writeConcept(params.slug, params.content, params.sources, params.workspace);
       const action = existed ? "updated" : "created";
       return {
         content: [
@@ -775,6 +997,11 @@ export default function (pi: ExtensionAPI) {
         }),
         { description: "Complete list of ALL pages in the wiki" },
       ),
+      workspace: Type.Optional(
+        Type.String({
+          description: "Workspace name (omit for default)",
+        }),
+      ),
     }),
     async execute(_toolCallId, params) {
       const docLines: string[] = [];
@@ -800,7 +1027,7 @@ export default function (pi: ExtensionAPI) {
         "",
       ].join("\n");
 
-      writeIndex(index);
+      writeIndex(index, params.workspace);
       return {
         content: [
           {
@@ -821,9 +1048,14 @@ export default function (pi: ExtensionAPI) {
       "Delete a concept page from the knowledge base. Use during /kb-remove when the concept had only the removed document as its source.",
     parameters: Type.Object({
       slug: Type.String({ description: "Concept slug to delete" }),
+      workspace: Type.Optional(
+        Type.String({
+          description: "Workspace name (omit for default)",
+        }),
+      ),
     }),
     async execute(_toolCallId, params) {
-      const existed = deleteConcept(params.slug);
+      const existed = deleteConcept(params.slug, params.workspace);
       if (existed) {
         return {
           content: [
@@ -857,9 +1089,14 @@ export default function (pi: ExtensionAPI) {
       docName: Type.String({
         description: "Document name slug to delete",
       }),
+      workspace: Type.Optional(
+        Type.String({
+          description: "Workspace name (omit for default)",
+        }),
+      ),
     }),
     async execute(_toolCallId, params) {
-      const existed = deleteSummary(params.docName);
+      const existed = deleteSummary(params.docName, params.workspace);
       if (existed) {
         return {
           content: [
@@ -884,19 +1121,35 @@ export default function (pi: ExtensionAPI) {
   });
 
   // -----------------------------------------------------------------------
-  // session_start hook
+  // session_start hook — report on all workspaces
   // -----------------------------------------------------------------------
 
   pi.on("session_start", async (_event, _ctx) => {
-    if (kbExists()) {
-      const summaryCount = listSummaries().length;
-      const conceptCount = listConcepts().length;
-      if (summaryCount > 0 || conceptCount > 0) {
-        // Log to console for visibility — notify might be too noisy
-        console.log(
-          `[kb] Loaded: ${summaryCount} docs, ${conceptCount} concepts (${KB_ROOT})`,
-        );
+    const defExists = kbExists();
+    const named = listWorkspaces();
+
+    if (!defExists && named.length === 0) return;
+
+    const parts: string[] = [];
+
+    if (defExists) {
+      const s = listSummaries();
+      const c = listConcepts();
+      if (s.length > 0 || c.length > 0) {
+        parts.push(`default(${s.length}d/${c.length}c)`);
+      } else {
+        parts.push("default(empty)");
       }
+    }
+
+    for (const ws of named) {
+      const s = listSummaries(ws);
+      const c = listConcepts(ws);
+      parts.push(`${ws}(${s.length}d/${c.length}c)`);
+    }
+
+    if (parts.length > 0) {
+      console.log(`[kb] Loaded: ${parts.join(", ")}`);
     }
   });
 }

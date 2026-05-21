@@ -3,6 +3,9 @@
  *
  * These are injected into the pi session via sendUserMessage when a command
  * runs. The LLM uses the kb_* tools to carry out the instructions.
+ *
+ * All prompt builders accept an optional `workspace` parameter. When set,
+ * the prompt instructs the LLM to pass that workspace name to every tool call.
  */
 
 // ---------------------------------------------------------------------------
@@ -13,9 +16,20 @@ export function buildCompilePrompt(
   sourceName: string,
   docName: string,
   content: string,
+  workspace?: string,
 ): string {
+  const wsContext = workspace
+    ? [
+        `**Workspace:** \`${workspace}\``,
+        ``,
+        `IMPORTANT: Pass \`workspace="${workspace}"\` to EVERY kb_* tool call.`,
+      ].join("\n")
+    : `**Workspace:** default (no workspace param needed)`;
+
   return [
     `[kb-compile] Add the following document to the knowledge base.`,
+    ``,
+    wsContext,
     ``,
     `**Source file:** ${sourceName}`,
     `**Doc name (slug for summaries/concepts):** ${docName}`,
@@ -82,9 +96,22 @@ export function buildCompilePrompt(
 // Query prompt (for /kb-query)
 // ---------------------------------------------------------------------------
 
-export function buildQueryPrompt(question: string): string {
+export function buildQueryPrompt(
+  question: string,
+  workspace?: string,
+): string {
+  const wsContext = workspace
+    ? [
+        `**Workspace:** \`${workspace}\``,
+        ``,
+        `IMPORTANT: Pass \`workspace="${workspace}"\` to EVERY kb_* tool call.`,
+      ].join("\n")
+    : `**Workspace:** default (no workspace param needed)`;
+
   return [
     `[kb-query] Answer the following question using ONLY the knowledge base.`,
+    ``,
+    wsContext,
     ``,
     `## Search strategy`,
     `1. Call \`kb_read_index\` to see all documents and concepts with brief descriptions.`,
@@ -103,9 +130,23 @@ export function buildQueryPrompt(question: string): string {
 // Remove prompt (for /kb-remove)
 // ---------------------------------------------------------------------------
 
-export function buildRemovePrompt(docName: string, sourceName: string): string {
+export function buildRemovePrompt(
+  docName: string,
+  sourceName: string,
+  workspace?: string,
+): string {
+  const wsContext = workspace
+    ? [
+        `**Workspace:** \`${workspace}\``,
+        ``,
+        `IMPORTANT: Pass \`workspace="${workspace}"\` to EVERY kb_* tool call.`,
+      ].join("\n")
+    : `**Workspace:** default (no workspace param needed)`;
+
   return [
     `[kb-remove] Remove the document "${sourceName}" (docName: ${docName}) from the knowledge base.`,
+    ``,
+    wsContext,
     ``,
     `### Instructions`,
     `1. Call \`kb_read_index\` to see the current state.`,
