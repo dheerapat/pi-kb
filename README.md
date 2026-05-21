@@ -18,6 +18,7 @@ pi install git:github.com/dheerapat/pi-kb
 /kb-list                  List all documents and concepts
 /kb-status                Show knowledge base stats
 /kb-remove <docName>      Remove a document and clean up wiki pages
+/kb-ws-rm <name>         Delete a workspace (confirmation required)
 /kb-workspaces            List all workspaces and their stats
 ```
 
@@ -43,7 +44,18 @@ Create isolated knowledge bases for different projects:
 /kb-query -w myproject "what's the auth flow?"
 ```
 
-Workspaces are stored as subdirectories under `~/.pi/agent/kb/workspaces/`:
+Workspaces are stored as subdirectories under `~/.pi/agent/kb/workspaces/`.
+
+To delete a workspace and all its data:
+
+```bash
+/kb-ws-rm myproject       # Deletes everything in workspace "myproject"
+/kb-ws-rm default          # Clears the default workspace (keeps named workspaces)
+```
+
+A confirmation dialog is shown before anything is removed. Deleting the default
+workspace (`/kb-ws-rm default`) clears its sources, summaries, concepts, and
+index but preserves any named workspaces under `workspaces/`.
 
 ## How it works
 
