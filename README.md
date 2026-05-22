@@ -39,7 +39,7 @@ If no workspace is specified, commands operate on the **default** workspace at `
 Create isolated knowledge bases for different projects:
 
 ```bash
-/kb-init myproject       # Create workspace
+/kb-init myproject               # Create workspace
 /kb-add -w myproject design.md   # Populate it
 /kb-query -w myproject "what's the auth flow?"
 ```
@@ -50,7 +50,7 @@ To delete a workspace and all its data:
 
 ```bash
 /kb-ws-rm myproject       # Deletes everything in workspace "myproject"
-/kb-ws-rm default          # Clears the default workspace (keeps named workspaces)
+/kb-ws-rm default         # Clears the default workspace (keeps named workspaces)
 ```
 
 A confirmation dialog is shown before anything is removed. Deleting the default
