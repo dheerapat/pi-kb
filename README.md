@@ -18,7 +18,7 @@ pi install git:github.com/dheerapat/pi-kb
 /kb-list                  List all documents and concepts
 /kb-status                Show knowledge base stats
 /kb-remove <docName>      Remove a document and clean up wiki pages
-/kb-ws-rm <name>         Delete a workspace (confirmation required)
+/kb-ws-rm <name>          Delete a workspace (confirmation required)
 /kb-workspaces            List all workspaces and their stats
 ```
 
