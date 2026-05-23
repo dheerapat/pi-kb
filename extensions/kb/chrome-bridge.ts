@@ -16,7 +16,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { WebSocketServer, WebSocket } from "ws";
 import { spawn, ChildProcess } from "node:child_process";
-import * as path from "node:path";
 
 import {
   readRegistry,
@@ -26,7 +25,6 @@ import {
   listConcepts,
   readConcept,
   listWorkspaces,
-  getWorkspaceRoot,
   ConceptInfo,
 } from "./store";
 
@@ -34,8 +32,6 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Directory containing this file — passed to child pi as -e <dir>. */
-const KB_EXT_DIR = __dirname;
 const DEFAULT_PORT = 9876;
 
 // ---------------------------------------------------------------------------
@@ -88,9 +84,11 @@ function spawnPiRpc(
 ): ChildProcess {
   log(`[kb-bridge] Spawning child pi for ${command}: ${promptText}`);
 
+  // pi-kb is installed globally and auto-discovered by pi — no -e flag needed.
+  // --no-session keeps each add/query isolated (no session persistence).
   const child = spawn(
     "pi",
-    ["--mode", "rpc", "--no-session", "-e", KB_EXT_DIR],
+    ["--mode", "rpc", "--no-session"],
     {
       stdio: ["pipe", "pipe", "pipe"],
     },
