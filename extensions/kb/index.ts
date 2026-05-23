@@ -362,6 +362,16 @@ export default function (pi: ExtensionAPI) {
       for (const fp of filePaths) {
         // ── URL branch ───────────────────────────────────────
         if (isUrl(fp)) {
+          // Dedup by URL BEFORE fetching (avoids unnecessary network request)
+          if (isUrlInRegistry(fp, workspace)) {
+            const existing = findByUrl(fp, workspace)!;
+            ctx.ui.notify(
+              `Already in KB${wsLabel}: ${fp} (added ${existing.addedAt.slice(0, 10)})`,
+              "warning",
+            );
+            continue;
+          }
+
           ensureKbDir(workspace);
 
           // Fetch & convert HTML → Markdown
@@ -376,17 +386,7 @@ export default function (pi: ExtensionAPI) {
 
           const content = converted.content;
           const docName = docNameFromUrl(fp, converted.title);
-
-          // Dedup by URL (content hashing unreliable for dynamic pages)
           const fileHash = hashContent(content);
-          if (isUrlInRegistry(fp, workspace)) {
-            const existing = findByUrl(fp, workspace)!;
-            ctx.ui.notify(
-              `Already in KB${wsLabel}: ${fp} (added ${existing.addedAt.slice(0, 10)})`,
-              "warning",
-            );
-            continue;
-          }
 
           // Doc-name collision check
           if (isDocNameUsed(docName, workspace)) {
