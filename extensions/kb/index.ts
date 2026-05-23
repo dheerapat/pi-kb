@@ -59,6 +59,8 @@ import {
   buildRemovePrompt,
 } from "./prompts";
 
+import { startBridge } from "./chrome-bridge";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -823,6 +825,31 @@ export default function (pi: ExtensionAPI) {
           "error",
         );
       }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // /kb-chrome-bridge
+  // -----------------------------------------------------------------------
+
+  pi.registerCommand("kb-chrome-bridge", {
+    description:
+      "Start the WebSocket bridge for the Chrome extension. Connect the chrome-kb extension to this session.",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify(
+        "Starting Chrome bridge on ws://127.0.0.1:9876 ...\n\n" +
+          "Open the chrome-kb extension side panel to connect.\n" +
+          "The bridge stays active while this pi session runs.\n" +
+          "Press Ctrl+C to stop the bridge.",
+        "info",
+      );
+
+      startBridge(pi);
+
+      // Keep the promise alive so the user sees the running status
+      await new Promise(() => {
+        // Intentionally never resolves — the server runs until pi exits
+      });
     },
   });
 

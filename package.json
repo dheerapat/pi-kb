@@ -16,11 +16,12 @@
   },
   "dependencies": {
     "@kreuzberg/html-to-markdown-node": "^3.4.0",
-    "typebox": "*"
+    "typebox": "*",
+    "ws": "^8.21.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-ai": "*"
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
   },
   "repository": {
     "type": "git",
