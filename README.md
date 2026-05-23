@@ -18,6 +18,7 @@ pi install git:github.com/dheerapat/pi-kb
 /kb-list                  List all documents and concepts
 /kb-status                Show knowledge base stats
 /kb-remove <docName>      Remove a document and clean up wiki pages
+/kb-repair [docName]      Re-compile interrupted /kb-add documents
 /kb-ws-rm <name>          Delete a workspace (confirmation required)
 /kb-workspaces            List all workspaces and their stats
 ```
@@ -33,6 +34,28 @@ All commands accept `-w <name>` to target a specific workspace:
 ```
 
 If no workspace is specified, commands operate on the **default** workspace at `~/.pi/agent/kb/`.
+
+### Interrupted compilations & recovery
+
+When you run `/kb-add`, the source file is copied and registered immediately,
+but the wiki compilation (summary, concepts, index) runs asynchronously through
+the LLM. If the session is interrupted mid-compilation, the registry will list
+the document but the wiki will be incomplete.
+
+**Detection:** `/kb-status` shows a `⚠ Pending compilation` line when there are
+documents stuck in this state. `/kb-list` marks them with `⚠[pending]`.
+
+**Recovery:** Run `/kb-repair` to re-compile all pending documents. Pass a
+`docName` to repair a specific one:
+
+```
+/kb-repair                  # Re-compile all pending docs
+/kb-repair design           # Re-compile just one
+/kb-repair -w myproject     # Repair a specific workspace
+```
+
+Re-adding the same file also triggers automatic recovery — `/kb-add` detects
+the interrupted state and resumes compilation instead of rejecting the duplicate.
 
 ### Workspaces
 
@@ -59,11 +82,16 @@ index but preserves any named workspaces under `workspaces/`.
 
 ## How it works
 
-1. `/kb-add docs/peptic_ulcer.md` copies the file into `~/.pi/agent/kb/source/`
+1. `/kb-add docs/peptic_ulcer.md` copies the file into `~/.pi/agent/kb/source/` and writes an entry to `registry.json` with `compiled: false`
 2. `/kb-add -w myproject docs/design.md` copies the file into `~/.pi/agent/kb/workspaces/myproject/source/`
 3. `/kb-add https://example.com/article` fetches the page, converts HTML to Markdown using [html-to-markdown](https://github.com/kreuzberg-dev/html-to-markdown) (Rust-powered), and saves the result
 4. Pi's LLM reads the current wiki state, writes a summary, extracts cross-cutting concepts, and updates the index
-5. Everything is stored as plain markdown in `~/.pi/agent/kb/wiki/` — open it in Obsidian for graph view
+5. The final step (`kb_update_index`) sets `compiled: true` on the registry entry — this is the atomic commit point that marks the document as fully compiled
+6. Everything is stored as plain markdown in `~/.pi/agent/kb/wiki/` — open it in Obsidian for graph view
+
+If step 4 is interrupted, the registry keeps `compiled: false`. `/kb-status`
+shows the gap, `/kb-repair` resumes compilation, and re-adding the same file
+auto-recovers.
 
 ```
 ~/.pi/agent/kb/
