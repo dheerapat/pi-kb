@@ -117,6 +117,10 @@ export interface RegistryEntry {
   addedAt: string;
   /** ISO timestamp of last compilation */
   lastCompiledAt?: string;
+  /** True only after ALL wiki artifacts (summary, concepts, index) are written.
+   *  Set by kb_update_index (the final compilation step). Used to detect
+   *  interrupted compilations where registry was written but LLM didn't finish. */
+  compiled: boolean;
 }
 
 export type Registry = Record<string, RegistryEntry>;
@@ -365,6 +369,19 @@ export function writeSummary(
   ].join("\n");
   const full = frontmatter + "\n\n" + content;
   fs.writeFileSync(path.join(wp.summariesDir, `${docName}.md`), full, "utf-8");
+}
+
+/** Check whether a registry entry is fully compiled (all wiki artifacts present).
+ *  Missing `compiled` field is treated as true for backward compatibility with
+ *  registries created before the compiled flag was introduced. */
+export function isEntryCompiled(entry: RegistryEntry): boolean {
+  return entry.compiled !== false;
+}
+
+/** Count registry entries that are not yet fully compiled. */
+export function countPendingCompilations(workspace?: string): number {
+  const reg = readRegistry(workspace);
+  return Object.values(reg).filter((e) => !isEntryCompiled(e)).length;
 }
 
 // ---------------------------------------------------------------------------

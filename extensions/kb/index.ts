@@ -38,6 +38,7 @@ import {
   normalizeUrl,
   copySource,
   writeSourceContent,
+  readSource,
   readIndex,
   writeIndex,
   listSummaries,
@@ -50,6 +51,8 @@ import {
   deleteSummary,
   readRegistry,
   writeRegistry,
+  isEntryCompiled,
+  countPendingCompilations,
   type RegistryEntry,
 } from "./store";
 
@@ -365,6 +368,27 @@ export default function (pi: ExtensionAPI) {
           // Dedup by URL BEFORE fetching (avoids unnecessary network request)
           if (isUrlInRegistry(fp, workspace)) {
             const existing = findByUrl(fp, workspace)!;
+            if (!isEntryCompiled(existing)) {
+              ctx.ui.notify(
+                `Re-compiling${wsLabel}: ${fp} (previously added ${existing.addedAt.slice(0, 10)} but compilation was interrupted)`,
+                "info",
+              );
+              let content2: string;
+              try {
+                content2 = readSource(existing.sourcePath, workspace);
+              } catch (e: any) {
+                ctx.ui.notify(`Failed to read source: ${e.message}`, "error");
+                continue;
+              }
+              const prompt2 = buildCompilePrompt(
+                existing.name,
+                existing.docName,
+                content2,
+                workspace,
+              );
+              pi.sendUserMessage(prompt2);
+              continue;
+            }
             ctx.ui.notify(
               `Already in KB${wsLabel}: ${fp} (added ${existing.addedAt.slice(0, 10)})`,
               "warning",
@@ -423,6 +447,7 @@ export default function (pi: ExtensionAPI) {
               originalPath: normalizedUrl,
               docName: finalDocName,
               addedAt: isoNow(),
+              compiled: false,
             };
             const reg = readRegistry(workspace);
             reg[fileHash] = entry;
@@ -459,6 +484,7 @@ export default function (pi: ExtensionAPI) {
             originalPath: normalizedUrl,
             docName,
             addedAt: isoNow(),
+            compiled: false,
           };
           const reg = readRegistry(workspace);
           reg[fileHash] = entry;
@@ -511,6 +537,21 @@ export default function (pi: ExtensionAPI) {
         // Dedup by hash
         if (isInRegistry(fileHash, workspace)) {
           const existing = readRegistry(workspace)[fileHash];
+          if (!isEntryCompiled(existing)) {
+            ctx.ui.notify(
+              `Re-compiling${wsLabel}: ${fp} (previously added ${existing.addedAt.slice(0, 10)} but compilation was interrupted)`,
+              "info",
+            );
+            const content2 = fs.readFileSync(absPath, "utf-8");
+            const prompt2 = buildCompilePrompt(
+              existing.name,
+              existing.docName,
+              content2,
+              workspace,
+            );
+            pi.sendUserMessage(prompt2);
+            continue;
+          }
           ctx.ui.notify(
             `Already in KB${wsLabel}: ${fp} (added ${existing.addedAt.slice(0, 10)})`,
             "warning",
@@ -549,6 +590,7 @@ export default function (pi: ExtensionAPI) {
           originalPath: absPath,
           docName,
           addedAt: isoNow(),
+          compiled: false,
         };
         const reg = readRegistry(workspace);
         reg[fileHash] = entry;
@@ -640,8 +682,10 @@ export default function (pi: ExtensionAPI) {
             const entry = Object.values(reg).find((e) => e.docName === name);
             const source = entry ? entry.name : "?";
             const added = entry ? entry.addedAt.slice(0, 10) : "?";
+            const pending =
+              entry && !isEntryCompiled(entry) ? " ⚠[pending]" : "";
             lines.push(
-              `  - [[summary/${name}]] (source: ${source}, added: ${added})`,
+              `  - [[summary/${name}]] (source: ${source}, added: ${added})${pending}`,
             );
           }
           lines.push("");
@@ -692,6 +736,12 @@ export default function (pi: ExtensionAPI) {
       // Build path description
       const rootPath = workspace ? `${WORKSPACES_DIR}/${workspace}` : KB_ROOT;
 
+      const pendingCount = countPendingCompilations(workspace);
+      const pendingLine =
+        pendingCount > 0
+          ? `  ⚠ Pending compilation: ${pendingCount} (use /kb-repair to finish)`
+          : null;
+
       const lines = [
         `## KB Status${wsLabel}`,
         "",
@@ -700,6 +750,7 @@ export default function (pi: ExtensionAPI) {
         `  Summaries: ${summaryCount}`,
         `  Concepts: ${conceptCount}`,
         `  Last add: ${lastEntry ? `${lastEntry.name} (${lastEntry.addedAt.slice(0, 10)})` : "never"}`,
+        ...(pendingLine ? [pendingLine] : []),
       ];
 
       ctx.ui.notify(lines.join("\n"), "info");
@@ -822,6 +873,116 @@ export default function (pi: ExtensionAPI) {
           `Failed to delete workspace "${name}": ${e.message}`,
           "error",
         );
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // /kb-repair [docName] [-w <workspace>]
+  // -----------------------------------------------------------------------
+
+  pi.registerCommand("kb-repair", {
+    description:
+      "Detect and re-compile documents whose compilation was interrupted. " +
+      "Pass a docName to repair a specific document. Use -w <name> for a named workspace.",
+    handler: async (args, ctx) => {
+      const { workspace, rest } = parseWorkspaceArgs(args);
+
+      if (!kbExists(workspace)) {
+        const label = workspace
+          ? `Workspace "${workspace}"`
+          : "No knowledge base";
+        ctx.ui.notify(`${label} found.`, "warning");
+        return;
+      }
+
+      const reg = readRegistry(workspace);
+      const wsLabel = workspace ? ` [${workspace}]` : "";
+
+      // ── Specific docName ───────────────────────────────────
+      if (rest) {
+        const docName = rest.trim();
+        const matches = Object.entries(reg).filter(
+          ([_, e]) => e.docName === docName,
+        );
+
+        if (matches.length === 0) {
+          ctx.ui.notify(
+            `No document with slug "${docName}" found in registry.`,
+            "error",
+          );
+          return;
+        }
+
+        const [hash, entry] = matches[0];
+        if (isEntryCompiled(entry)) {
+          ctx.ui.notify(
+            `Document "${docName}" is already compiled.`,
+            "info",
+          );
+          return;
+        }
+
+        let content: string;
+        try {
+          content = readSource(entry.sourcePath, workspace);
+        } catch (e: any) {
+          ctx.ui.notify(
+            `Failed to read source for "${docName}": ${e.message}`,
+            "error",
+          );
+          return;
+        }
+
+        ctx.ui.notify(`Re-compiling${wsLabel}: ${entry.name}`, "info");
+        const prompt = buildCompilePrompt(
+          entry.name,
+          entry.docName,
+          content,
+          workspace,
+        );
+        pi.sendUserMessage(prompt);
+        return;
+      }
+
+      // ── All pending documents ───────────────────────────────
+      const pending = Object.entries(reg).filter(
+        ([_, e]) => !isEntryCompiled(e),
+      );
+
+      if (pending.length === 0) {
+        ctx.ui.notify(
+          `All documents are compiled${wsLabel}. Nothing to repair.`,
+          "info",
+        );
+        return;
+      }
+
+      ctx.ui.notify(
+        `Found ${pending.length} pending document(s)${wsLabel}. Re-compiling...`,
+        "info",
+      );
+
+      for (const [hash, entry] of pending) {
+        let content: string;
+        try {
+          content = readSource(entry.sourcePath, workspace);
+        } catch (e: any) {
+          ctx.ui.notify(
+            `Failed to read source for "${entry.docName}": ${e.message}. Skipping.`,
+            "warning",
+          );
+          continue;
+        }
+
+        ctx.ui.notify(`Re-compiling${wsLabel}: ${entry.name}`, "info");
+        const prompt = buildCompilePrompt(
+          entry.name,
+          entry.docName,
+          content,
+          workspace,
+        );
+        pi.sendUserMessage(prompt);
       }
     },
   });
@@ -993,18 +1154,6 @@ export default function (pi: ExtensionAPI) {
         params.workspace,
       );
 
-      // Update lastCompiledAt
-      if (entry) {
-        entry.lastCompiledAt = isoNow();
-        const hash = Object.keys(reg).find(
-          (k) => reg[k].docName === params.docName,
-        );
-        if (hash) {
-          reg[hash] = entry;
-          writeRegistry(reg, params.workspace);
-        }
-      }
-
       return {
         content: [
           {
@@ -1112,6 +1261,29 @@ export default function (pi: ExtensionAPI) {
       ].join("\n");
 
       writeIndex(index, params.workspace);
+
+      // Mark all referenced summary docs as fully compiled.
+      // kb_update_index is the final compilation step, so reaching here
+      // means all wiki artifacts (summary, concepts, index) are in sync.
+      const reg = readRegistry(params.workspace);
+      let markedCount = 0;
+      const now = isoNow();
+      for (const entry of params.entries) {
+        if (entry.type === "summary") {
+          const docName = entry.slug;
+          for (const [hash, regEntry] of Object.entries(reg)) {
+            if (regEntry.docName === docName && !isEntryCompiled(regEntry)) {
+              regEntry.compiled = true;
+              regEntry.lastCompiledAt = now;
+              markedCount++;
+            }
+          }
+        }
+      }
+      if (markedCount > 0) {
+        writeRegistry(reg, params.workspace);
+      }
+
       return {
         content: [
           {
