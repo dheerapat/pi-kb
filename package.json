@@ -16,8 +16,7 @@
   },
   "dependencies": {
     "@kreuzberg/html-to-markdown-node": "^3.4.0",
-    "typebox": "*",
-    "ws": "^8.21.0"
+    "typebox": "*"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
