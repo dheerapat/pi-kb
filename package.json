@@ -9,6 +9,9 @@
     "llm"
   ],
   "license": "MIT",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "pi": {
     "extensions": [
       "./extensions/kb"
