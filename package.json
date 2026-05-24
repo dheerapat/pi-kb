@@ -15,15 +15,18 @@
     ]
   },
   "dependencies": {
-    "@kreuzberg/html-to-markdown-node": "^3.4.0",
-    "typebox": "*"
+    "@kreuzberg/html-to-markdown-node": "^3.4.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/dheeto/pi-kb"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
   }
 }
