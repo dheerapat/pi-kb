@@ -82,6 +82,7 @@ export interface KnowledgeBaseStore {
   ensureKbDir(workspace?: string): boolean;
   kbExists(workspace?: string): boolean;
   deleteWorkspace(name?: string): string;
+  clearWorkspace(name?: string): string;
 
   // ── Hashing ──────────────────────────────────────────
   hashContent(content: string): string;

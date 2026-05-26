@@ -1,7 +1,7 @@
 /**
  * commands/workspaces.ts — Workspace management commands.
  *
- * Registers: /kb-init, /kb-workspaces, /kb-ws-rm
+ * Registers: /kb-init, /kb-workspaces, /kb-clear, /kb-ws-rm
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -102,29 +102,56 @@ export function registerWorkspaceCommands(
     },
   });
 
-  // ── /kb-ws-rm <workspace-name> ────────────────────────────
-  pi.registerCommand("kb-ws-rm", {
+  // ── /kb-clear <workspace-name> [-y] ──────────────────
+  pi.registerCommand("kb-clear", {
     description:
-      "Delete a workspace entirely (including all its sources, summaries, and concepts). " +
-      "Use '/kb-ws-rm default' to tear down the default workspace.",
+      "Clear all wiki content (source/, wiki/, registry) from a workspace " +
+      "while keeping the workspace directory. Works for both default and named " +
+      "workspaces. Pass -y to skip confirmation.",
     handler: async (args, ctx) => {
-      const name = (args ?? "").trim();
-
-      if (!name) {
+      const raw = (args ?? "").trim();
+      if (!raw) {
         ctx.ui.notify(
-          "Usage: /kb-ws-rm <workspace-name>\n\n" +
-            "Deletes the workspace and all its data.\n" +
+          "Usage: /kb-clear [-y] <workspace-name>\n\n" +
+            "Clears all wiki content but keeps the workspace directory.\n" +
+            "Works for both default and named workspaces.\n" +
             "Examples:\n" +
-            "  /kb-ws-rm myproject\n" +
-            "  /kb-ws-rm default   # explicit only",
+            "  /kb-clear default\n" +
+            "  /kb-clear myproject\n" +
+            "  /kb-clear -y default   # skip confirmation",
           "warning",
         );
         return;
       }
 
-      if (!store.workspaceExists(name)) {
+      // Parse -y flag
+      let skipConfirm = false;
+      let outerName = raw;
+      const yPrefix = outerName.match(/^-y\s+/);
+      const ySuffix = outerName.match(/\s+-y$/);
+      if (yPrefix) {
+        skipConfirm = true;
+        outerName = outerName.slice(yPrefix[0].length).trim();
+      } else if (ySuffix) {
+        skipConfirm = true;
+        outerName = outerName.slice(0, ySuffix.index).trim();
+      }
+
+      if (!outerName) {
+        ctx.ui.notify(
+          "Usage: /kb-clear [-y] <workspace-name>",
+          "warning",
+        );
+        return;
+      }
+
+      const wsParam = outerName === "default" ? undefined : outerName;
+
+      if (!store.workspaceExists(outerName)) {
         const label =
-          name === "default" ? "Default workspace" : `Workspace "${name}"`;
+          outerName === "default"
+            ? "Default workspace"
+            : `Workspace "${outerName}"`;
         ctx.ui.notify(
           `${label} does not exist or has not been initialized.`,
           "error",
@@ -133,24 +160,114 @@ export function registerWorkspaceCommands(
       }
 
       const label =
-        name === "default" ? "the default workspace" : `workspace "${name}"`;
-      const confirmed = await ctx.ui.confirm(
-        "Delete workspace?",
-        `Are you sure you want to delete ${label}?\n` +
-          "All sources, summaries, concepts, and the index will be permanently removed.",
-      );
+        outerName === "default"
+          ? "the default workspace"
+          : `workspace "${outerName}"`;
 
-      if (!confirmed) {
-        ctx.ui.notify("Deletion cancelled.", "info");
-        return;
+      if (!skipConfirm) {
+        const confirmed = await ctx.ui.confirm(
+          "Clear workspace?",
+          `Are you sure you want to clear ${label}?\n` +
+            "All sources, summaries, concepts, and the index will be permanently removed, " +
+            "but the workspace directory will be kept.",
+        );
+        if (!confirmed) {
+          ctx.ui.notify("Clear cancelled.", "info");
+          return;
+        }
       }
 
       try {
-        const removedPath = store.deleteWorkspace(
-          name === "default" ? undefined : name,
-        );
+        const clearedPath = store.clearWorkspace(wsParam);
         ctx.ui.notify(
-          `Workspace deleted: ${name}\n` + `  Path: ${removedPath}`,
+          `Workspace cleared: ${outerName}\n  Path: ${clearedPath}`,
+          "info",
+        );
+      } catch (e: any) {
+        ctx.ui.notify(
+          `Failed to clear workspace "${outerName}": ${e.message}`,
+          "error",
+        );
+      }
+    },
+  });
+
+  // ── /kb-ws-rm <workspace-name> [-y] ────────────────────
+  pi.registerCommand("kb-ws-rm", {
+    description:
+      "Delete a named workspace entirely (its whole folder). " +
+      "Does not support the default workspace — use /kb-clear default instead. " +
+      "Pass -y to skip confirmation.",
+    handler: async (args, ctx) => {
+      const raw = (args ?? "").trim();
+
+      if (!raw) {
+        ctx.ui.notify(
+          "Usage: /kb-ws-rm [-y] <workspace-name>\n\n" +
+            "Deletes the entire named workspace folder.\n" +
+            "To clear the default workspace, use /kb-clear default instead.\n" +
+            "Examples:\n" +
+            "  /kb-ws-rm myproject\n" +
+            "  /kb-ws-rm -y myproject   # skip confirmation",
+          "warning",
+        );
+        return;
+      }
+
+      // Parse -y flag
+      let skipConfirm = false;
+      let name = raw;
+      const yPrefix = name.match(/^-y\s+/);
+      const ySuffix = name.match(/\s+-y$/);
+      if (yPrefix) {
+        skipConfirm = true;
+        name = name.slice(yPrefix[0].length).trim();
+      } else if (ySuffix) {
+        skipConfirm = true;
+        name = name.slice(0, ySuffix.index).trim();
+      }
+
+      if (!name) {
+        ctx.ui.notify(
+          "Usage: /kb-ws-rm [-y] <workspace-name>",
+          "warning",
+        );
+        return;
+      }
+
+      if (name === "default") {
+        ctx.ui.notify(
+          "/kb-ws-rm does not support the default workspace. " +
+            "Use /kb-clear default to clear it instead.",
+          "error",
+        );
+        return;
+      }
+
+      if (!store.workspaceExists(name)) {
+        ctx.ui.notify(
+          `Workspace "${name}" does not exist or has not been initialized.`,
+          "error",
+        );
+        return;
+      }
+
+      if (!skipConfirm) {
+        const confirmed = await ctx.ui.confirm(
+          "Delete workspace?",
+          `Are you sure you want to delete workspace "${name}"?\n` +
+            "The entire workspace folder and all its contents will be permanently removed.",
+        );
+        if (!confirmed) {
+          ctx.ui.notify("Deletion cancelled.", "info");
+          return;
+        }
+      }
+
+      try {
+        const removedPath = store.deleteWorkspace(name);
+        ctx.ui.notify(
+          `Workspace deleted: ${name}\n  Path: ${removedPath}`,
           "info",
         );
       } catch (e: any) {

@@ -91,22 +91,19 @@ export class FilesystemStore implements KnowledgeBaseStore {
     return fs.existsSync(wp.root);
   }
 
-  deleteWorkspace(name?: string): string {
+  clearWorkspace(name?: string): string {
     const wp = this.getWorkspaceRoot(name);
-
-    if (!name || name === "default") {
-      const keepDir = path.join(KB_ROOT, "workspaces");
-      if (fs.existsSync(wp.root)) {
-        for (const entry of fs.readdirSync(wp.root)) {
-          const full = path.join(wp.root, entry);
-          if (full === keepDir) continue;
-          fs.rmSync(full, { recursive: true, force: true });
-        }
+    for (const p of [wp.sourceDir, wp.wikiDir, wp.registryPath]) {
+      if (fs.existsSync(p)) {
+        fs.rmSync(p, { recursive: true, force: true });
       }
-      return wp.root;
     }
+    return wp.root;
+  }
 
-    const wsDir = path.join(WORKSPACES_DIR, name);
+  deleteWorkspace(name?: string): string {
+    // Only for named workspaces. Use clearWorkspace to clear the default workspace.
+    const wsDir = path.join(WORKSPACES_DIR, name!);
     if (fs.existsSync(wsDir)) {
       fs.rmSync(wsDir, { recursive: true, force: true });
     }
