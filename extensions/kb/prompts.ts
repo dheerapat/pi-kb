@@ -67,10 +67,13 @@ export function buildCompilePrompt(
     `  1. Call \`kb_read_concept(slug)\` to read its current content`,
     `  2. Call \`kb_write_concept(slug, content, sources)\` to REWRITE the full`,
     `     page, integrating the new information naturally into the existing body.`,
-    `     Add this document's source name to the sources list.`,
+    `     Add \`summary/${docName}\` to the sources list.`,
     ``,
     `* **If the topic is NEW and substantive:**`,
-    `  Call \`kb_write_concept(slug, content, sources)\` to create from scratch.`,
+    `  Call \`kb_write_concept(slug, content, sources=["summary/${docName}"])\` to create from scratch.`,
+    ``,
+    `**IMPORTANT:** The \`sources\` parameter expects summary page references like`,
+    `\`["summary/${docName}"]\`, NOT raw filenames like \`["${docName}.md"]\`.`,
     ``,
     `Concept slug rules: lowercase, hyphens, 4 words max.`,
     `  Good: "caching-strategy", "api-authentication"`,
@@ -88,6 +91,7 @@ export function buildCompilePrompt(
     `- Use \`[[concept/slug]]\` to link to concepts`,
     `- Concepts MUST be cross-document synthesis, not single-document regurgitation`,
     `- Be concise. Wiki content should be scannable.`,
+    `- Do NOT write footer sections — they are generated automatically.`,
   ].join("\n");
 }
 
@@ -123,12 +127,25 @@ export function buildQueryPrompt(question: string, workspace?: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Remove prompt (for /kb-remove)
+// Remove Phase 2 prompt (surgical excision, not from-scratch rewrite)
+//
+// Phase 1 (deterministic) has already:
+//   - Deleted the summary
+//   - Removed the source from each concept's sources list
+//   - Set `needs_review: true` in affected concept frontmatter
+//   - Deleted concepts that had no sources left
+//   - Rebuilt the index
+//   - Deleted the source file
+//   - Deleted the registry entry
+//
+// Phase 2 (this prompt) asks the LLM to surgically remove content traceable
+// to the deleted document from remaining concept bodies.
 // ---------------------------------------------------------------------------
 
 export function buildRemovePrompt(
   docName: string,
   sourceName: string,
+  affectedConceptSlugs: string[],
   workspace?: string,
 ): string {
   const wsContext = workspace
@@ -139,21 +156,40 @@ export function buildRemovePrompt(
       ].join("\n")
     : `**Workspace:** default (no workspace param needed)`;
 
+  const slugList = affectedConceptSlugs
+    .map((s) => `- \`concepts/${s}.md\``)
+    .join("\n");
+
   return [
-    `[kb-remove] Remove the document "${sourceName}" (docName: ${docName}) from the knowledge base.`,
+    `[kb-remove-phase-2] The document "${sourceName}" (docName: ${docName}) was removed from the knowledge base.`,
+    `Phase 1 has already: deleted the summary, updated concept source lists, rebuilt the index, and removed the registry entry.`,
+    ``,
+    `The following concept pages previously referenced "${sourceName}" and have \`needs_review: true\` in their frontmatter:`,
+    ``,
+    slugList,
     ``,
     wsContext,
     ``,
     `### Instructions`,
-    `1. Call \`kb_read_index\` to see the current state.`,
-    `2. For each concept page that lists "${sourceName}" in its sources, call \`kb_read_concept(slug)\`.`,
-    `3. If the concept has OTHER sources besides "${sourceName}":`,
-    `   - Rewrite the concept to remove information from this document`,
-    `   - Remove "${sourceName}" from the sources list`,
-    `   - Call \`kb_write_concept(slug, content, sources)\` with the updated version`,
-    `4. If "${sourceName}" was the ONLY source for a concept:`,
-    `   - Call \`kb_delete_concept(slug)\` to remove it`,
-    `5. Call \`kb_delete_summary("${docName}")\` to remove the summary page.`,
-    `6. Call \`kb_update_index(entries)\` with the COMPLETE remaining list of ALL pages.`,
+    `For EACH concept listed above:`,
+    ``,
+    `1. Call \`kb_read_concept(slug)\` to read the current body.`,
+    `   It will show \`⚠ needs_review: true\` in the output.`,
+    ``,
+    `2. Identify content that came from the removed document "${sourceName}".`,
+    `   Remove ONLY that content. Keep everything traceable to the remaining sources.`,
+    ``,
+    `3. Call \`kb_write_concept(slug, cleanedBody, sources)\`.`,
+    `   **IMPORTANT:** The sources list in the frontmatter is ALREADY CORRECT.`,
+    `   Read it from the concept (\`kb_read_concept\` shows sources), verify it does NOT`,
+    `   contain \`summary/${docName}\`, and pass it through UNCHANGED.`,
+    `   The \`needs_review\` flag will be reset to false on write.`,
+    ``,
+    `If you cannot confidently identify which content came from "${sourceName}",`,
+    `still call \`kb_write_concept\` with the body unchanged — the write will`,
+    `clear \`needs_review\` and the concept will be marked as clean.`,
+    ``,
+    `DO NOT call \`kb_update_index\` — the index was already rebuilt in Phase 1.`,
+    `DO NOT call \`kb_delete_summary\` or \`kb_delete_concept\` — those were handled in Phase 1.`,
   ].join("\n");
 }

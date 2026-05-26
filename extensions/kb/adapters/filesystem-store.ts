@@ -225,6 +225,14 @@ export class FilesystemStore implements KnowledgeBaseStore {
     return fs.readFileSync(path.join(wp.root, destRel), "utf-8");
   }
 
+  deleteSource(sourcePath: string, workspace?: string): boolean {
+    const wp = this.getWorkspaceRoot(workspace);
+    const p = path.join(wp.root, sourcePath);
+    if (!fs.existsSync(p)) return false;
+    fs.unlinkSync(p);
+    return true;
+  }
+
   // ── Index ───────────────────────────────────────────────
 
   readIndex(workspace?: string): string {
@@ -266,14 +274,21 @@ export class FilesystemStore implements KnowledgeBaseStore {
   ): void {
     const wp = this.getWorkspaceRoot(workspace);
     fs.mkdirSync(wp.summariesDir, { recursive: true });
+
+    // Frontmatter
     const frontmatter = [
       "---",
+      `name: "${docName}"`,
       `source: "${originalName}"`,
-      `doc_source: "source/${originalName}"`,
-      `added: "${addedAt}"`,
+      `date_added: "${addedAt}"`,
       "---",
     ].join("\n");
-    const full = frontmatter + "\n\n" + content;
+
+    // Deterministic footer: extract [[concept/...]] links from body
+    const conceptLinks = extractConceptLinks(content);
+    const footer = buildSummaryFooter(conceptLinks);
+
+    const full = frontmatter + "\n\n" + content + "\n\n" + footer;
     fs.writeFileSync(
       path.join(wp.summariesDir, `${docName}.md`),
       full,
@@ -307,7 +322,8 @@ export class FilesystemStore implements KnowledgeBaseStore {
     const raw = fs.readFileSync(p, "utf-8");
 
     let sources: string[] = [];
-    let updated: string | undefined;
+    let dateAdded: string | undefined;
+    let needsReview = false;
     let body = raw;
 
     if (raw.startsWith("---")) {
@@ -326,17 +342,37 @@ export class FilesystemStore implements KnowledgeBaseStore {
                 .map((s) => s.trim().replace(/^["']|["']$/g, ""))
                 .filter(Boolean);
             }
-          } else if (trimmed.startsWith("updated:")) {
-            updated = trimmed
-              .slice("updated:".length)
+          } else if (trimmed.startsWith("date_added:")) {
+            dateAdded = trimmed
+              .slice("date_added:".length)
               .trim()
               .replace(/^["']|["']$/g, "");
+          } else if (trimmed.startsWith("updated:")) {
+            // Legacy field — use as date_added fallback
+            if (!dateAdded) {
+              dateAdded = trimmed
+                .slice("updated:".length)
+                .trim()
+                .replace(/^["']|["']$/g, "");
+            }
+          } else if (trimmed.startsWith("needs_review:")) {
+            const val = trimmed.slice("needs_review:".length).trim();
+            needsReview = val === "true";
           }
         }
       }
     }
 
-    return { slug, sources, updated, body };
+    // Strip deterministic footer (--- separator + Sources section) from body
+    const footerSep = body.lastIndexOf("\n\n---\n");
+    if (footerSep !== -1) {
+      const afterSep = body.slice(footerSep + 1).trimStart();
+      if (afterSep.startsWith("---") && afterSep.includes("**Sources**")) {
+        body = body.slice(0, footerSep);
+      }
+    }
+
+    return { slug, sources, dateAdded, needsReview, body };
   }
 
   writeConcept(
@@ -344,18 +380,27 @@ export class FilesystemStore implements KnowledgeBaseStore {
     content: string,
     sources: string[],
     workspace?: string,
+    needsReview?: boolean,
   ): void {
     const wp = this.getWorkspaceRoot(workspace);
     fs.mkdirSync(wp.conceptsDir, { recursive: true });
     const now = new Date().toISOString();
     const sourcesYaml = "[" + sources.map((s) => `"${s}"`).join(", ") + "]";
+    const needsReviewStr = needsReview === true ? "true" : "false";
+
     const frontmatter = [
       "---",
+      `name: "${slug}"`,
       `sources: ${sourcesYaml}`,
-      `updated: "${now}"`,
+      `date_added: "${now}"`,
+      `needs_review: ${needsReviewStr}`,
       "---",
     ].join("\n");
-    const full = frontmatter + "\n\n" + content;
+
+    // Deterministic footer: links back to each source summary
+    const footer = buildConceptFooter(sources);
+
+    const full = frontmatter + "\n\n" + content + "\n\n" + footer;
     fs.writeFileSync(path.join(wp.conceptsDir, `${slug}.md`), full, "utf-8");
   }
 
@@ -399,4 +444,122 @@ export class FilesystemStore implements KnowledgeBaseStore {
       concepts,
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic footer builders
+// ---------------------------------------------------------------------------
+
+/** Extract unique [[concept/...]] slugs from markdown body text. */
+function extractConceptLinks(body: string): string[] {
+  const seen = new Set<string>();
+  const regex = /\[\[concept\/([^\]|#]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(body)) !== null) {
+    seen.add(match[1]);
+  }
+  return [...seen].sort();
+}
+
+function buildSummaryFooter(conceptSlugs: string[]): string {
+  if (conceptSlugs.length === 0) {
+    return "---\n\n*No concepts reference this document yet.*";
+  }
+  return (
+    "---\n" +
+    "\n" +
+    "**Concepts**\n" +
+    conceptSlugs.map((s) => `[[concept/${s}]]`).join("\n") +
+    "\n"
+  );
+}
+
+function buildConceptFooter(sources: string[]): string {
+  if (sources.length === 0) {
+    return "---\n\n*No sources.*";
+  }
+  return (
+    "---\n" +
+    "\n" +
+    "**Sources**\n" +
+    sources.map((s) => `[[${s}]]`).join("\n") +
+    "\n"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Post-compile summary footer sync
+// ---------------------------------------------------------------------------
+
+/**
+ * Regenerate `**Concepts**` footers in all summary files by scanning
+ * concept sources to find which concepts reference each summary.
+ * Called at the end of compilation (in kb_update_index) so summary
+ * footers are always in sync with concept source lists.
+ */
+export function syncSummaryFooters(
+  store: FilesystemStore,
+  workspace?: string,
+): void {
+  const wp = store.getWorkspaceRoot(workspace);
+  const summaries = store.listSummaries(workspace);
+  const conceptSlugs = store.listConcepts(workspace);
+
+  // Build map: summary docName → concept slugs that reference it
+  const refs = new Map<string, string[]>();
+  for (const s of summaries) refs.set(s, []);
+
+  for (const slug of conceptSlugs) {
+    const c = store.readConcept(slug, workspace);
+    if (!c) continue;
+    for (const src of c.sources) {
+      const docName = extractDocNameFromSource(src);
+      if (docName && refs.has(docName)) {
+        refs.get(docName)!.push(slug);
+      }
+    }
+  }
+
+  // Update each summary's footer in place
+  for (const [docName, slugs] of refs) {
+    const summaryPath = path.join(wp.summariesDir, `${docName}.md`);
+    if (!fs.existsSync(summaryPath)) continue;
+
+    const raw = fs.readFileSync(summaryPath, "utf-8");
+
+    // Parse frontmatter
+    let frontmatter = "";
+    let body = raw;
+    if (raw.startsWith("---")) {
+      const end = raw.indexOf("---", 3);
+      if (end !== -1) {
+        frontmatter = raw.slice(0, end + 3);
+        body = raw.slice(end + 3).trimStart();
+      }
+    }
+
+    // Strip any existing trailing --- footer separator
+    const lastSep = body.lastIndexOf("\n---\n");
+    if (lastSep !== -1) {
+      body = body.slice(0, lastSep).trimEnd();
+    }
+
+    // Build deterministic footer from actual concept references
+    const deduped = [...new Set(slugs)].sort();
+    const footer =
+      deduped.length > 0
+        ? "---\n\n**Concepts**\n" +
+          deduped.map((s) => `[[concept/${s}]]`).join("\n") + "\n"
+        : "---\n\n*No concepts reference this document yet.*";
+
+    const full = frontmatter + "\n\n" + body + "\n\n" + footer;
+    fs.writeFileSync(summaryPath, full, "utf-8");
+  }
+}
+
+/** Extract docName from a source reference like "summary/arch" → "arch", "file.md" → "file" */
+function extractDocNameFromSource(src: string): string | null {
+  if (src.startsWith("summary/")) return src.slice("summary/".length);
+  // Legacy format: "filename.md"
+  return src.replace(/\.md$/, "");
 }

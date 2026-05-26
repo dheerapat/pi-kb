@@ -13,7 +13,18 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { KnowledgeBaseStore } from "./ports/types";
-import { isoNow } from "./utils";
+import { isoNow, resolveLinks } from "./utils";
+import { syncSummaryFooters } from "./adapters/filesystem-store";
+import type { FilesystemStore } from "./adapters/filesystem-store";
+
+// ── Session-scoped pending concept slugs (Gap 1: intra-session linking) ──
+//
+// During compilation the LLM writes multiple concept pages sequentially.
+// If concept A links to concept B but B hasn't been written to disk yet,
+// the resolver would strip the link. This set tracks slugs that kb_write_concept
+// has promised to create in this session, so the resolver treats them as valid.
+// Cleared at the end of compilation (in kb_update_index).
+const sessionPendingSlugs = new Set<string>();
 
 export function registerTools(
   pi: ExtensionAPI,
@@ -90,7 +101,10 @@ export function registerTools(
           details: {},
         };
       }
-      const header = `## ${params.slug}\nSources: ${info.sources.join(", ")}\n\n`;
+      const needsReviewNote = info.needsReview
+        ? `\n⚠ needs_review: true (a source document was removed — body may need cleanup)`
+        : "";
+      const header = `## ${params.slug}\nSources: ${info.sources.join(", ")}${needsReviewNote}\n\n`;
       return {
         content: [{ type: "text" as const, text: header + info.body }],
         details: {},
@@ -161,9 +175,22 @@ export function registerTools(
       const originalName = entry?.name ?? `${params.docName}.md`;
       const addedAt = entry?.addedAt ?? isoNow();
 
+      // Resolve links against live slug registries + pending concepts.
+      // preserveUnknownConcepts: true — summaries can have aspirational
+      // [[concept/...]] links to concepts that haven't been written yet.
+      const summaries = new Set(store.listSummaries(params.workspace));
+      const concepts = new Set(store.listConcepts(params.workspace));
+      const cleaned = resolveLinks(
+        params.content,
+        summaries,
+        concepts,
+        sessionPendingSlugs,
+        { preserveUnknownConcepts: true },
+      );
+
       store.writeSummary(
         params.docName,
-        params.content,
+        cleaned,
         originalName,
         addedAt,
         params.workspace,
@@ -196,7 +223,7 @@ export function registerTools(
       }),
       sources: Type.Array(Type.String(), {
         description:
-          "List of source filenames (e.g. ['architecture.md', 'design.md'])",
+          "List of summary page references (e.g. ['summary/architecture', 'summary/design'])",
       }),
       workspace: Type.Optional(
         Type.String({ description: "Workspace name (omit for default)" }),
@@ -204,9 +231,28 @@ export function registerTools(
     }),
     async execute(_toolCallId, params) {
       const existed = store.listConcepts(params.workspace).includes(params.slug);
+
+      // Track this slug as pending so other pages written in this session
+      // can link to it before it hits disk (Gap 1 fix).
+      sessionPendingSlugs.add(params.slug);
+
+      // Resolve links against live slug registries + pending concepts.
+      // Unknown concepts are stripped (concepts should only link to
+      // existing or pending concepts).
+      const summaries = new Set(store.listSummaries(params.workspace));
+      const concepts = new Set(store.listConcepts(params.workspace));
+      // Include this slug itself (it may not be on disk yet if new)
+      concepts.add(params.slug);
+      const cleaned = resolveLinks(
+        params.content,
+        summaries,
+        concepts,
+        sessionPendingSlugs,
+      );
+
       store.writeConcept(
         params.slug,
-        params.content,
+        cleaned,
         params.sources,
         params.workspace,
       );
@@ -247,10 +293,21 @@ export function registerTools(
       ),
     }),
     async execute(_toolCallId, params) {
+      // Ground-truth validation: filter entries against what actually exists
+      // on disk. Any slug the LLM invented that doesn't correspond to a real
+      // file is silently dropped (RFC: deterministic write).
+      const diskSummaries = new Set(store.listSummaries(params.workspace));
+      const diskConcepts = new Set(store.listConcepts(params.workspace));
+
+      const validEntries = params.entries.filter((entry) => {
+        if (entry.type === "summary") return diskSummaries.has(entry.slug);
+        return diskConcepts.has(entry.slug);
+      });
+
       const docLines: string[] = [];
       const conceptLines: string[] = [];
 
-      for (const entry of params.entries) {
+      for (const entry of validEntries) {
         const line = `- [[${entry.type}/${entry.slug}]] — ${entry.brief}`;
         if (entry.type === "summary") {
           docLines.push(line);
@@ -276,10 +333,10 @@ export function registerTools(
       const reg = store.readRegistry(params.workspace);
       let markedCount = 0;
       const now = isoNow();
-      for (const entry of params.entries) {
+      for (const entry of validEntries) {
         if (entry.type === "summary") {
           const docName = entry.slug;
-          for (const [hash, regEntry] of Object.entries(reg)) {
+          for (const [, regEntry] of Object.entries(reg)) {
             if (
               regEntry.docName === docName &&
               !store.isEntryCompiled(regEntry)
@@ -294,6 +351,12 @@ export function registerTools(
       if (markedCount > 0) {
         store.writeRegistry(reg, params.workspace);
       }
+
+      // Compilation session complete — flush pending slugs (Gap 1)
+      sessionPendingSlugs.clear();
+
+      // Sync summary footers from actual concept sources (deterministic)
+      syncSummaryFooters(store as FilesystemStore, params.workspace);
 
       return {
         content: [

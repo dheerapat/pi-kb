@@ -31,8 +31,11 @@ export type Registry = Record<string, RegistryEntry>;
 
 export interface ConceptInfo {
   slug: string;
+  /** Summary page references, e.g. ["summary/architecture", "summary/design"] */
   sources: string[];
-  updated?: string;
+  dateAdded?: string;
+  /** True when a source was removed and the body needs LLM review (Phase 2) */
+  needsReview: boolean;
   body: string;
 }
 
@@ -100,6 +103,7 @@ export interface KnowledgeBaseStore {
     workspace?: string,
   ): CopyResult;
   readSource(destRel: string, workspace?: string): string;
+  deleteSource(sourcePath: string, workspace?: string): boolean;
 
   // ── Index ────────────────────────────────────────────
   readIndex(workspace?: string): string;
@@ -125,6 +129,7 @@ export interface KnowledgeBaseStore {
     content: string,
     sources: string[],
     workspace?: string,
+    needsReview?: boolean,
   ): void;
   deleteConcept(slug: string, workspace?: string): boolean;
 

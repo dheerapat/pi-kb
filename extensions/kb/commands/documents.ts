@@ -13,6 +13,7 @@ import {
   parseWorkspaceArgs,
   resolvePath,
   isoNow,
+  buildIndexContent,
 } from "../utils";
 import {
   buildCompilePrompt,
@@ -112,12 +113,81 @@ export function registerDocumentCommands(
       const wsLabel = workspace ? ` [${workspace}]` : "";
       ctx.ui.notify(`Removing${wsLabel}: ${entry.name} (${docName})`, "info");
 
-      const prompt = buildRemovePrompt(docName, entry.name, workspace);
-      pi.sendUserMessage(prompt);
+      // ═══════════════════════════════════════════════════════
+      // Phase 1 — Deterministic structural cleanup (no LLM)
+      // ═══════════════════════════════════════════════════════
 
-      // Clean up registry immediately (LLM handles wiki cleanup)
+      // 1. Delete the summary
+      store.deleteSummary(docName, workspace);
+
+      // 2. Clean concepts: remove source from sources list, delete if orphaned.
+      //    Set needs_review: true instead of wiping body (Gap 2).
+      const affectedConceptSlugs: string[] = [];
+
+      // Match both new format ("summary/docName") and legacy ("filename.md")
+      const sourceRefs = [entry.name, `summary/${entry.docName}`];
+
+      for (const slug of store.listConcepts(workspace)) {
+        const concept = store.readConcept(slug, workspace);
+        if (!concept || !concept.sources.some((s) => sourceRefs.includes(s)))
+          continue;
+
+        const remainingSources = concept.sources.filter(
+          (s) => !sourceRefs.includes(s),
+        );
+
+        if (remainingSources.length === 0) {
+          // No sources left — delete the concept entirely
+          store.deleteConcept(slug, workspace);
+        } else {
+          // Keep the body, update sources, set needs_review flag
+          store.writeConcept(
+            slug,
+            concept.body,
+            remainingSources,
+            workspace,
+            true,
+          );
+          affectedConceptSlugs.push(slug);
+        }
+      }
+
+      // 3. Rebuild index from disk (deterministic, no LLM involvement)
+      const summaries = store.listSummaries(workspace);
+      const concepts = store.listConcepts(workspace).map((slug) => {
+        const c = store.readConcept(slug, workspace);
+        return { slug, sources: c?.sources ?? [] };
+      });
+      store.writeIndex(buildIndexContent(summaries, concepts), workspace);
+
+      // 4. Delete the source file
+      store.deleteSource(entry.sourcePath, workspace);
+
+      // 5. Delete registry entry LAST (registry is always consistent with disk)
       delete reg[hash];
       store.writeRegistry(reg, workspace);
+
+      // ═══════════════════════════════════════════════════════
+      // Phase 2 — LLM surgical excision (non-critical, additive)
+      // ═══════════════════════════════════════════════════════
+      if (affectedConceptSlugs.length > 0) {
+        ctx.ui.notify(
+          `${affectedConceptSlugs.length} concept(s) need body cleanup${wsLabel}. Sending to LLM...`,
+          "info",
+        );
+        const prompt = buildRemovePrompt(
+          docName,
+          entry.name,
+          affectedConceptSlugs,
+          workspace,
+        );
+        pi.sendUserMessage(prompt);
+      } else {
+        ctx.ui.notify(
+          `Removal complete${wsLabel}: ${entry.name} (no concepts affected)`,
+          "info",
+        );
+      }
     },
   });
 
