@@ -13,18 +13,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { KnowledgeBaseStore } from "./ports/types";
-import { isoNow, resolveLinks } from "./utils";
+import { isoNow } from "./utils";
 import { syncSummaryFooters } from "./adapters/filesystem-store";
 import type { FilesystemStore } from "./adapters/filesystem-store";
-
-// ── Session-scoped pending concept slugs (Gap 1: intra-session linking) ──
-//
-// During compilation the LLM writes multiple concept pages sequentially.
-// If concept A links to concept B but B hasn't been written to disk yet,
-// the resolver would strip the link. This set tracks slugs that kb_write_concept
-// has promised to create in this session, so the resolver treats them as valid.
-// Cleared at the end of compilation (in kb_update_index).
-const sessionPendingSlugs = new Set<string>();
 
 export function registerTools(
   pi: ExtensionAPI,
@@ -175,22 +166,9 @@ export function registerTools(
       const originalName = entry?.name ?? `${params.docName}.md`;
       const addedAt = entry?.addedAt ?? isoNow();
 
-      // Resolve links against live slug registries + pending concepts.
-      // preserveUnknownConcepts: true — summaries can have aspirational
-      // [[concept/...]] links to concepts that haven't been written yet.
-      const summaries = new Set(store.listSummaries(params.workspace));
-      const concepts = new Set(store.listConcepts(params.workspace));
-      const cleaned = resolveLinks(
-        params.content,
-        summaries,
-        concepts,
-        sessionPendingSlugs,
-        { preserveUnknownConcepts: true },
-      );
-
       store.writeSummary(
         params.docName,
-        cleaned,
+        params.content,
         originalName,
         addedAt,
         params.workspace,
@@ -213,7 +191,7 @@ export function registerTools(
     name: "kb_write_concept",
     label: "Write KB Concept",
     description:
-      "Create or update a concept page. Pass ALL sources that contributed to this concept (old + new).",
+      "Create a NEW concept page. Use kb_update_concept to add sources to an existing concept.",
     parameters: Type.Object({
       slug: Type.String({
         description: "Concept slug (lowercase, hyphens, e.g. 'caching-strategy')",
@@ -232,27 +210,9 @@ export function registerTools(
     async execute(_toolCallId, params) {
       const existed = store.listConcepts(params.workspace).includes(params.slug);
 
-      // Track this slug as pending so other pages written in this session
-      // can link to it before it hits disk (Gap 1 fix).
-      sessionPendingSlugs.add(params.slug);
-
-      // Resolve links against live slug registries + pending concepts.
-      // Unknown concepts are stripped (concepts should only link to
-      // existing or pending concepts).
-      const summaries = new Set(store.listSummaries(params.workspace));
-      const concepts = new Set(store.listConcepts(params.workspace));
-      // Include this slug itself (it may not be on disk yet if new)
-      concepts.add(params.slug);
-      const cleaned = resolveLinks(
-        params.content,
-        summaries,
-        concepts,
-        sessionPendingSlugs,
-      );
-
       store.writeConcept(
         params.slug,
-        cleaned,
+        params.content,
         params.sources,
         params.workspace,
       );
@@ -262,6 +222,63 @@ export function registerTools(
           {
             type: "text" as const,
             text: `Concept ${action}: concepts/${params.slug}.md (sources: ${params.sources.join(", ")})`,
+          },
+        ],
+        details: {},
+      };
+    },
+  });
+
+  // ── kb_update_concept ───────────────────────────────────
+  pi.registerTool({
+    name: "kb_update_concept",
+    label: "Update KB Concept",
+    description:
+      "Update an EXISTING concept with new information from a document. " +
+      "The new source is automatically merged with existing sources — you only need to pass the new one.",
+    parameters: Type.Object({
+      slug: Type.String({
+        description: "Existing concept slug (e.g. 'caching-strategy')",
+      }),
+      content: Type.String({
+        description: "Full rewritten markdown body with new info integrated",
+      }),
+      source: Type.String({
+        description:
+          "Single summary ref to add, e.g. 'summary/architecture'",
+      }),
+      workspace: Type.Optional(
+        Type.String({ description: "Workspace name (omit for default)" }),
+      ),
+    }),
+    async execute(_toolCallId, params) {
+      const existing = store.readConcept(params.slug, params.workspace);
+      if (!existing) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Concept "${params.slug}" does not exist. Use kb_write_concept to create it first.`,
+            },
+          ],
+          details: {},
+        };
+      }
+
+      // Deterministic union: old sources preserved, new source appended
+      const mergedSources = [...new Set([...existing.sources, params.source])];
+
+      store.writeConcept(
+        params.slug,
+        params.content,
+        mergedSources,
+        params.workspace,
+      );
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Concept updated: concepts/${params.slug}.md (sources: ${mergedSources.join(", ")})`,
           },
         ],
         details: {},
@@ -351,9 +368,6 @@ export function registerTools(
       if (markedCount > 0) {
         store.writeRegistry(reg, params.workspace);
       }
-
-      // Compilation session complete — flush pending slugs (Gap 1)
-      sessionPendingSlugs.clear();
 
       // Sync summary footers from actual concept sources (deterministic)
       syncSummaryFooters(store as FilesystemStore, params.workspace);

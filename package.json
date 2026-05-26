@@ -30,6 +30,7 @@
     "url": "https://github.com/dheeto/pi-kb"
   },
   "devDependencies": {
+    "tsx": "^4.22.3",
     "typescript": "^6.0.3"
   }
 }
