@@ -12,7 +12,7 @@ pi install git:github.com/dheerapat/pi-kb
 
 ```
 /kb-init <name>           Create a named workspace
-/kb-add <file.md | url>   Add a markdown file or URL to the knowledge base
+/kb-add [-f] <file | url> Add a markdown file or URL; -f skips pending-confirmation
 /kb-add @file.md          Pi file autocomplete works
 /kb-query <question>      Ask a question against the knowledge base
 /kb-list                  List all documents and concepts
@@ -41,6 +41,14 @@ When you run `/kb-add`, the source file is copied and registered immediately,
 but the wiki compilation (summary, concepts, index) runs asynchronously through
 the LLM. If the session is interrupted mid-compilation, the registry will list
 the document but the wiki will be incomplete.
+
+**At most one document can be pending at a time.** If you try to `/kb-add` a new
+document while another is still pending, pi shows a confirmation dialog: discard
+the pending document and add the new one, or keep the pending one (use
+`/kb-repair` to finish it). Pass `-f` to skip the dialog and force-discard:
+`/kb-add -f new-file.md`. Re-adding *the same* file or URL while it's pending
+triggers a re-compile — the dedup logic runs before the guard, so retrying the
+same document always works.
 
 **Detection:** `/kb-status` shows a `⚠ Pending compilation` line. `/kb-list` marks
 them with `⚠[pending]`.

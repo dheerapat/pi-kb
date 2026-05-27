@@ -44,7 +44,7 @@ export function registerDocumentCommands(
         return;
       }
 
-      const { workspace, rest } = parseWorkspaceArgs(args);
+      const { workspace, force, rest } = parseWorkspaceArgs(args);
 
       const filePaths = rest
         .split(/\s+/)
@@ -67,7 +67,7 @@ export function registerDocumentCommands(
         }
 
         // ── File branch ─────────────────────────────────
-        handleFileAdd(fp, workspace, wsLabel, cwd, ctx, pi, store);
+        await handleFileAdd(fp, workspace, wsLabel, cwd, ctx, pi, store);
       }
     },
   });
@@ -270,6 +270,7 @@ export function registerDocumentCommands(
 async function handleUrlAdd(
   fp: string,
   workspace: string | undefined,
+  force: boolean,
   wsLabel: string,
   ctx: any,
   pi: ExtensionAPI,
@@ -305,6 +306,27 @@ async function handleUrlAdd(
       "warning",
     );
     return;
+  }
+
+  // Guard: only one pending compilation at a time
+  if (store.countPendingCompilations(workspace) > 0) {
+    const reg = store.readRegistry(workspace);
+    const pendingEntry = Object.values(reg).find((e) => !store.isEntryCompiled(e));
+    const pendingName = pendingEntry ? pendingEntry.name : "unknown";
+    if (!force) {
+      const discard = await ctx.ui.confirm(
+        "Pending compilation",
+        `"${pendingName}" is pending compilation. Discard it to add "${fp}" instead?\n\nUse /kb-repair to finish the pending document without losing it.`,
+      );
+      if (!discard) {
+        ctx.ui.notify(
+          `Add blocked${wsLabel}: "${pendingName}" is still pending. Use /kb-repair to finish it.`,
+          "warning",
+        );
+        return;
+      }
+    }
+    discardPendingEntry(workspace, store, ctx);
   }
 
   store.ensureKbDir(workspace);
@@ -355,9 +377,10 @@ async function handleUrlAdd(
   pi.sendUserMessage(buildCompilePrompt(filename, finalDocName, content, workspace));
 }
 
-function handleFileAdd(
+async function handleFileAdd(
   fp: string,
   workspace: string | undefined,
+  force: boolean,
   wsLabel: string,
   cwd: string,
   ctx: any,
@@ -410,6 +433,27 @@ function handleFileAdd(
       "warning",
     );
     return;
+  }
+
+  // Guard: only one pending compilation at a time
+  if (store.countPendingCompilations(workspace) > 0) {
+    const reg = store.readRegistry(workspace);
+    const pendingEntry = Object.values(reg).find((e) => !store.isEntryCompiled(e));
+    const pendingName = pendingEntry ? pendingEntry.name : "unknown";
+    if (!force) {
+      const discard = await ctx.ui.confirm(
+        "Pending compilation",
+        `"${pendingName}" is pending compilation. Discard it to add "${path.basename(absPath)}" instead?\n\nUse /kb-repair to finish the pending document without losing it.`,
+      );
+      if (!discard) {
+        ctx.ui.notify(
+          `Add blocked${wsLabel}: "${pendingName}" is still pending. Use /kb-repair to finish it.`,
+          "warning",
+        );
+        return;
+      }
+    }
+    discardPendingEntry(workspace, store, ctx);
   }
 
   const originalName = path.basename(absPath);
@@ -474,6 +518,25 @@ function recompileEntry(
   pi.sendUserMessage(
     buildCompilePrompt(entry.name, entry.docName, content, workspace),
   );
+}
+
+/** Delete a pending entry from the registry and its source file. Used when the
+ *  user chooses to discard a pending compilation to make room for a new add. */
+function discardPendingEntry(
+  workspace: string | undefined,
+  store: KnowledgeBaseStore,
+  ctx: any,
+) {
+  const reg = store.readRegistry(workspace);
+  for (const [hash, entry] of Object.entries(reg)) {
+    if (!store.isEntryCompiled(entry)) {
+      store.deleteSource(entry.sourcePath, workspace);
+      delete reg[hash];
+      store.writeRegistry(reg, workspace);
+      ctx.ui.notify(`Discarded pending: ${entry.name}`, "info");
+      return;
+    }
+  }
 }
 
 /** If a docName is already taken, append "-2", "-3", etc. until unique. */

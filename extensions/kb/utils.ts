@@ -55,18 +55,28 @@ export function docNameFromUrl(
  */
 export function parseWorkspaceArgs(rawArgs: string): {
   workspace?: string;
+  force: boolean;
   rest: string;
 } {
   let rest = rawArgs.trim();
+  let workspace: string | undefined;
+  let force = false;
 
-  const match = rest.match(/(?:^|\s)(?:-w|--workspace)\s+(\S+)/);
-  if (match) {
-    const workspace = match[1];
-    rest = rest.replace(match[0], " ").replace(/\s+/g, " ").trim();
-    return { workspace, rest };
+  // Parse -w / --workspace
+  const wsMatch = rest.match(/(?:^|\s)(?:-w|--workspace)\s+(\S+)/);
+  if (wsMatch) {
+    workspace = wsMatch[1];
+    rest = rest.replace(wsMatch[0], " ").replace(/\s+/g, " ").trim();
   }
 
-  return { rest };
+  // Parse -f / --force
+  const forceMatch = rest.match(/(?:^|\s)(?:-f|--force)(?:\s|$)/);
+  if (forceMatch) {
+    force = true;
+    rest = rest.replace(forceMatch[0], " ").replace(/\s+/g, " ").trim();
+  }
+
+  return { workspace, force, rest };
 }
 
 /** Resolve a user-supplied path against the current working directory. */
