@@ -62,12 +62,12 @@ export function registerDocumentCommands(
       for (const fp of filePaths) {
         // ── URL branch ───────────────────────────────────
         if (isUrl(fp)) {
-          await handleUrlAdd(fp, workspace, wsLabel, ctx, pi, store, fetcher);
+          await handleUrlAdd(fp, workspace, force, wsLabel, ctx, pi, store, fetcher);
           continue;
         }
 
         // ── File branch ─────────────────────────────────
-        await handleFileAdd(fp, workspace, wsLabel, cwd, ctx, pi, store);
+        await handleFileAdd(fp, workspace, force, wsLabel, cwd, ctx, pi, store);
       }
     },
   });
