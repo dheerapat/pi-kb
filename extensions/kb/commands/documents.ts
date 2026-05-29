@@ -17,6 +17,7 @@ import {
 } from "../utils";
 import {
   buildCompilePrompt,
+  buildCompilePromptInline,
   buildRemovePrompt,
 } from "../prompts";
 import * as fs from "node:fs";
@@ -31,14 +32,14 @@ export function registerDocumentCommands(
 ) {
   const { store, fetcher } = deps;
 
-  // ── /kb-add <paths...> [-w <workspace>] ──────────────────
+  // ── /kb-add <@file | url> [-w <workspace>] ─────────────
   pi.registerCommand("kb-add", {
     description:
-      "Add markdown files or URLs to the knowledge base. Use -w <name> for a named workspace.",
+      "Add markdown files (via @) or URLs to the knowledge base. Use -w <name> for a named workspace.",
     handler: async (args, ctx) => {
       if (!args || !args.trim()) {
         ctx.ui.notify(
-          "Usage: /kb-add <file.md> [file2.md ...] [-w <workspace>]",
+          "Usage: /kb-add @file.md | <url> [-w <workspace>]",
           "warning",
         );
         return;
@@ -46,12 +47,12 @@ export function registerDocumentCommands(
 
       const { workspace, force, rest } = parseWorkspaceArgs(args);
 
-      const filePaths = rest
+      const rawArgs = rest
         .split(/\s+/)
-        .map((s) => s.trim().replace(/^@/, "")) // strip pi's @ prefix
+        .map((s) => s.trim())
         .filter(Boolean);
 
-      if (filePaths.length === 0) {
+      if (rawArgs.length === 0) {
         ctx.ui.notify("No files or URLs specified.", "warning");
         return;
       }
@@ -59,16 +60,142 @@ export function registerDocumentCommands(
       const { cwd } = ctx;
       const wsLabel = workspace ? ` [${workspace}]` : "";
 
-      for (const fp of filePaths) {
+      for (const arg of rawArgs) {
         // ── URL branch ───────────────────────────────────
-        if (isUrl(fp)) {
-          await handleUrlAdd(fp, workspace, force, wsLabel, ctx, pi, store, fetcher);
+        if (isUrl(arg)) {
+          await handleUrlAdd(arg, workspace, force, wsLabel, ctx, pi, store, fetcher);
           continue;
         }
 
-        // ── File branch ─────────────────────────────────
-        await handleFileAdd(fp, workspace, force, wsLabel, cwd, ctx, pi, store);
+        // ── @file branch ────────────────────────────────
+        if (arg.startsWith("@")) {
+          const fp = arg.slice(1); // strip @ prefix
+          await handleFileAdd(fp, workspace, force, wsLabel, cwd, ctx, pi, store);
+          continue;
+        }
+
+        // ── Reject plain paths ──────────────────────────
+        ctx.ui.notify(
+          `Unrecognized argument: "${arg}". Use @filename.md or a URL (https://...).`,
+          "error",
+        );
       }
+    },
+  });
+
+  // ── /kb-add-content <text> [-w <workspace>] [-f] ────────
+  pi.registerCommand("kb-add-content", {
+    description:
+      "Add inline text content to the knowledge base. The LLM will choose a docName. Use -w <name> for a named workspace.",
+    handler: async (args, ctx) => {
+      if (!args || !args.trim()) {
+        ctx.ui.notify(
+          "Usage: /kb-add-content <markdown text> [-w <workspace>] [-f]",
+          "warning",
+        );
+        return;
+      }
+
+      const { workspace, force, rest } = parseWorkspaceArgs(args);
+
+      if (!rest || rest.trim().length === 0) {
+        ctx.ui.notify(
+          "No content provided. Usage: /kb-add-content <markdown text> [-w <workspace>] [-f]",
+          "warning",
+        );
+        return;
+      }
+
+      const content = rest.trim();
+      const wsLabel = workspace ? ` [${workspace}]` : "";
+      const contentHash = store.hashContent(content);
+      const tempDocName = `inline-${contentHash.slice(0, 8)}`;
+      const filename = `${tempDocName}.md`;
+
+      // Dedup by hash
+      const reg = store.readRegistry(workspace);
+      if (Object.keys(reg).includes(contentHash)) {
+        const existing = reg[contentHash];
+        if (!store.isEntryCompiled(existing)) {
+          ctx.ui.notify(
+            `Re-compiling${wsLabel}: inline content (previously added ${existing.addedAt.slice(0, 10)} but compilation was interrupted)`,
+            "info",
+          );
+          pi.sendUserMessage(
+            buildCompilePromptInline(existing.docName, content, workspace),
+          );
+          return;
+        }
+        ctx.ui.notify(
+          `Already in KB${wsLabel}: inline content (added ${existing.addedAt.slice(0, 10)} as "${existing.docName}")`,
+          "warning",
+        );
+        return;
+      }
+
+      // Guard: only one pending compilation at a time
+      if (store.countPendingCompilations(workspace) > 0) {
+        const pendingEntry = Object.values(reg).find(
+          (e) => !store.isEntryCompiled(e),
+        );
+        const pendingName = pendingEntry ? pendingEntry.name : "unknown";
+        if (!force) {
+          const discard = await ctx.ui.confirm(
+            "Pending compilation",
+            `"${pendingName}" is pending compilation. Discard it to add inline content instead?\n\nUse /kb-repair to finish the pending document without losing it.`,
+          );
+          if (!discard) {
+            ctx.ui.notify(
+              `Add blocked${wsLabel}: "${pendingName}" is still pending. Use /kb-repair to finish it.`,
+              "warning",
+            );
+            return;
+          }
+        }
+        discardPendingEntry(workspace, store, ctx);
+      }
+
+      store.ensureKbDir(workspace);
+
+      // Resolve doc-name collision (should be rare with inline- prefix but handle it)
+      const finalDocName = resolveDocNameCollision(
+        tempDocName,
+        workspace,
+        ctx,
+        store,
+      );
+      const finalFilename = `${finalDocName}.md`;
+
+      // Write source
+      let sourceRel: string;
+      try {
+        const wsc = store.writeSourceContent(finalFilename, content, workspace);
+        sourceRel = wsc.destRel;
+      } catch (e: any) {
+        ctx.ui.notify(`Failed to save source: ${e.message}`, "error");
+        return;
+      }
+
+      // Register
+      const entry: RegistryEntry = {
+        name: finalFilename,
+        sourcePath: sourceRel,
+        originalPath: `inline:${finalDocName}`,
+        docName: finalDocName,
+        addedAt: isoNow(),
+        compiled: false,
+      };
+      const newReg = store.readRegistry(workspace);
+      newReg[contentHash] = entry;
+      store.writeRegistry(newReg, workspace);
+
+      ctx.ui.notify(
+        `Added${wsLabel}: inline content → ${finalFilename} (temp name — LLM will rename)`,
+        "info",
+      );
+      pi.sendUserMessage(
+        buildCompilePromptInline(finalDocName, content, workspace),
+      );
     },
   });
 

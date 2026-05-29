@@ -3,7 +3,8 @@
  *
  * Registers: kb_read_index, kb_list_concepts, kb_read_concept,
  *            kb_read_summary, kb_write_summary, kb_write_concept,
- *            kb_update_index, kb_delete_concept, kb_delete_summary
+ *            kb_update_concept, kb_update_index, kb_set_docname,
+ *            kb_delete_concept, kb_delete_summary
  *
  * Every tool accepts an optional `workspace` parameter. The LLM receives
  * the workspace name in the prompt and passes it through.
@@ -16,6 +17,8 @@ import type { KnowledgeBaseStore } from "./ports/types";
 import { isoNow } from "./utils";
 import { syncSummaryFooters } from "./adapters/filesystem-store";
 import type { FilesystemStore } from "./adapters/filesystem-store";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 export function registerTools(
   pi: ExtensionAPI,
@@ -159,6 +162,19 @@ export function registerTools(
       ),
     }),
     async execute(_toolCallId, params) {
+      // Guard: reject temporary inline-* docNames — LLM must call kb_set_docname first
+      if (params.docName.startsWith("inline-")) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `"${params.docName}" is a temporary auto-generated name. Call kb_set_docname first to choose a meaningful slug, then use that name in kb_write_summary.`,
+            },
+          ],
+          details: {},
+        };
+      }
+
       const reg = store.readRegistry(params.workspace);
       const entry = Object.values(reg).find(
         (e) => e.docName === params.docName,
@@ -453,6 +469,114 @@ export function registerTools(
           {
             type: "text" as const,
             text: `Summary "${params.docName}" not found.`,
+          },
+        ],
+        details: {},
+      };
+    },
+  });
+
+  // ── kb_set_docname ─────────────────────────────────────
+  pi.registerTool({
+    name: "kb_set_docname",
+    label: "Set KB DocName",
+    description:
+      "Rename an inline document's temporary docName to a meaningful slug. Use during /kb-add-content compilation to pick a proper name.",
+    parameters: Type.Object({
+      oldDocName: Type.String({
+        description: "Current temporary docName (e.g. 'inline-a1b2c3d4')",
+      }),
+      newDocName: Type.String({
+        description: "New meaningful slug (lowercase, hyphens, 4 words max)",
+      }),
+      workspace: Type.Optional(
+        Type.String({ description: "Workspace name (omit for default)" }),
+      ),
+    }),
+    async execute(_toolCallId, params) {
+      const reg = store.readRegistry(params.workspace);
+
+      // Find the entry with this docName
+      const match = Object.entries(reg).find(
+        ([_, e]) => e.docName === params.oldDocName,
+      );
+      if (!match) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `DocName "${params.oldDocName}" not found in registry.`,
+            },
+          ],
+          details: {},
+        };
+      }
+
+      const [hash, entry] = match;
+
+      // Check if newDocName is already taken by another entry
+      const collision = Object.entries(reg).find(
+        ([h, e]) => h !== hash && e.docName === params.newDocName,
+      );
+      if (collision) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `DocName "${params.newDocName}" is already taken by another document. Choose a different slug.`,
+            },
+          ],
+          details: {},
+        };
+      }
+
+      // Rename source file
+      const wp = store.getWorkspaceRoot(params.workspace);
+      const oldSourcePath = path.join(wp.root, entry.sourcePath);
+      const newFilename = `${params.newDocName}.md`;
+      const newSourceRel = `source/${newFilename}`;
+      const newSourceAbs = path.join(wp.root, newSourceRel);
+
+      if (fs.existsSync(newSourceAbs)) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `A source file named "${newFilename}" already exists. Choose a different slug.`,
+            },
+          ],
+          details: {},
+        };
+      }
+
+      try {
+        fs.renameSync(oldSourcePath, newSourceAbs);
+      } catch (e: any) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Failed to rename source file: ${e.message}`,
+            },
+          ],
+          details: {},
+        };
+      }
+
+      // Update registry
+      entry.docName = params.newDocName;
+      entry.sourcePath = newSourceRel;
+      // Update originalPath only if it's an inline type
+      if (entry.originalPath.startsWith("inline:")) {
+        entry.originalPath = `inline:${params.newDocName}`;
+      }
+      store.writeRegistry(reg, params.workspace);
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `DocName updated: ${params.oldDocName} → ${params.newDocName}`,
           },
         ],
         details: {},

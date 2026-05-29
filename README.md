@@ -12,8 +12,8 @@ pi install git:github.com/dheerapat/pi-kb
 
 ```
 /kb-init <name>           Create a named workspace
-/kb-add [-f] <file | url> Add a markdown file or URL; -f skips pending-confirmation
-/kb-add @file.md          Pi file autocomplete works
+/kb-add [-f] @file | url  Add a markdown file (via @) or URL; -f skips pending-confirmation
+/kb-add-content <text>    Add inline markdown text (LLM chooses the title)
 /kb-query <question>      Ask a question against the knowledge base
 /kb-list                  List all documents and concepts
 /kb-status                Show knowledge base stats
@@ -46,7 +46,7 @@ the document but the wiki will be incomplete.
 document while another is still pending, pi shows a confirmation dialog: discard
 the pending document and add the new one, or keep the pending one (use
 `/kb-repair` to finish it). Pass `-f` to skip the dialog and force-discard:
-`/kb-add -f new-file.md`. Re-adding *the same* file or URL while it's pending
+`/kb-add -f new-file.md`. Re-adding _the same_ file or URL while it's pending
 triggers a re-compile — the dedup logic runs before the guard, so retrying the
 same document always works.
 
@@ -105,11 +105,29 @@ index but preserves any named workspaces under `workspaces/`.
 6. After the index is written, a **footer sync pass** regenerates every summary's `**Concepts**` footer from the actual concept source lists on disk — guaranteeing footers are always in sync
 7. The registry entry is marked `compiled: true` at the final step (the atomic commit point)
 
+### Adding inline content (`/kb-add-content`)
+
+Paste text directly into the knowledge base without a file or URL:
+
+```
+/kb-add-content # My Notes on Rust
+
+Rust is a systems programming language that...
+```
+
+1. The text is hashed and saved as `source/inline-{hash}.md` with a temporary `internal-*` docName
+2. The LLM receives a compile prompt that instructs it to **first choose a meaningful docName** via `kb_set_docname(oldDocName, newDocName)`
+3. After renaming, the LLM follows the same compile pipeline as `/kb-add` (summary → concepts → index)
+4. If the LLM forgets to rename, `kb_write_summary` rejects temporary `inline-*` names and prompts it to try again
+
+Same deduplication, pending-compilation guard, and `-f` override apply.
+
 ### Removing a document (`/kb-remove`)
 
 Removal uses a **two-phase staged pipeline**. Phase 1 is entirely deterministic (no LLM); Phase 2 is an optional LLM cleanup.
 
 **Phase 1 — deterministic structural cleanup:**
+
 1. Delete the summary file
 2. For each concept that references the removed document:
    - If the document was the **only source** → delete the concept entirely
@@ -119,6 +137,7 @@ Removal uses a **two-phase staged pipeline**. Phase 1 is entirely deterministic 
 5. Delete the registry entry **last** — at this point all wiki files are already consistent
 
 **Phase 2 — LLM surgical cleanup (non-critical):**
+
 - Only runs if concepts were affected
 - The LLM reads each concept flagged `needs_review: true`, surgically removes content traceable to the deleted document, and writes back with `needs_review: false`
 - If the session is interrupted during Phase 2, the KB remains valid — concepts just have `needs_review: true` flags that can be resolved later with a re-run
@@ -126,6 +145,7 @@ Removal uses a **two-phase staged pipeline**. Phase 1 is entirely deterministic 
 ### File format
 
 **Summary** (`wiki/summaries/{docName}.md`):
+
 ```markdown
 ---
 name: "architecture"
@@ -136,11 +156,13 @@ date_added: "2026-05-26T..."
 <summary prose>
 
 ---
+
 **Concepts**
 [[concept/caching-strategy]]
 ```
 
 **Concept** (`wiki/concepts/{slug}.md`):
+
 ```markdown
 ---
 name: "caching-strategy"
@@ -152,6 +174,7 @@ needs_review: false
 <concept prose>
 
 ---
+
 **Sources**
 [[summary/architecture]]
 [[summary/design]]
@@ -169,13 +192,13 @@ needs_review: false
 
 ### Failure modes — before vs after
 
-| Failure | Before (LLM-driven) | After (deterministic) |
-|---|---|---|
-| LLM invents slug in index | Phantom entry | Filtered before write |
-| Session interrupted mid-remove | Orphaned wiki files, no repair path | Phase 1 already committed; body preserved with `needs_review` flag |
-| Concept body corrupted by remove | Undetectable | Sources list correct, body kept, flag for review |
-| Registry deleted before cleanup | Inconsistent state | Registry deleted last, after all file ops |
-| LLM forgets old sources when updating concept | Sources lost | Union from disk — old sources always preserved |
+| Failure                                       | Before (LLM-driven)                 | After (deterministic)                                              |
+| --------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------ |
+| LLM invents slug in index                     | Phantom entry                       | Filtered before write                                              |
+| Session interrupted mid-remove                | Orphaned wiki files, no repair path | Phase 1 already committed; body preserved with `needs_review` flag |
+| Concept body corrupted by remove              | Undetectable                        | Sources list correct, body kept, flag for review                   |
+| Registry deleted before cleanup               | Inconsistent state                  | Registry deleted last, after all file ops                          |
+| LLM forgets old sources when updating concept | Sources lost                        | Union from disk — old sources always preserved                     |
 
 ```
 ~/.pi/agent/kb/
@@ -196,9 +219,11 @@ needs_review: false
 ```
 
 ## Web Page Compatibility
+
 `/kb-add` fetches pages using a plain HTTP request and converts the raw HTML to Markdown. This works well for static or server-rendered pages but will produce thin or empty results for JavaScript-heavy sites, since no browser or JS engine is involved.
 
 **Works well:**
+
 - Documentation sites (plain HTML, SSG output)
 - Wikipedia, blog posts, news articles
 - GitHub READMEs and rendered markdown pages
@@ -214,6 +239,7 @@ needs_review: false
 If a page produces an empty or garbled result, try finding a static mirror, an archived version at web.archive.org, or export the content manually as a `.md` file and use `/kb-add <file.md>` instead.
 
 ## Query from anywhere
+
 The knowledge base lives in `~/.pi/agent/kb/` — a fixed location in your home directory, not inside any project or repository. Once you've compiled documents, you can run `/kb-query` (with an optional `-w` workspace flag) from any directory on your machine. There's no need to be inside the repo where the source files originally came from.
 
 Cross-reference documents across workspaces by switching between them:
@@ -224,6 +250,7 @@ Cross-reference documents across workspaces by switching between them:
 ```
 
 ## Version controlling your KB
+
 The `~/.pi/agent/kb/` folder is plain files — `registry.json` and markdown — so it's easy to track with Git if you want history, backups, or to sync across machines.
 
 ```bash

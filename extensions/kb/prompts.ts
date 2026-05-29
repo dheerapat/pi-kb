@@ -94,6 +94,91 @@ export function buildCompilePrompt(
 }
 
 // ---------------------------------------------------------------------------
+// Compile prompt for /kb-add-content (inline text, no file/URL)
+// ---------------------------------------------------------------------------
+
+export function buildCompilePromptInline(
+  tempDocName: string,
+  content: string,
+  workspace?: string,
+): string {
+  const wsContext = workspace
+    ? [
+        `**Workspace:** \`${workspace}\``,
+        ``,
+        `IMPORTANT: Pass \`workspace="${workspace}"\` to EVERY kb_* tool call.`,
+      ].join("\n")
+    : `**Workspace:** default (no workspace param needed)`;
+
+  return [
+    `[kb-compile] Add the following inline content to the knowledge base.`,
+    ``,
+    wsContext,
+    ``,
+    `**Temporary docName:** ${tempDocName}`,
+    ``,
+    `## Document content`,
+    ``,
+    content,
+    ``,
+    `---`,
+    ``,
+    `## Knowledge Base Compilation Instructions`,
+    ``,
+    `### Step 0: Choose a meaningful docName`,
+    `This content came from an inline paste (no file or URL). It has`,
+    `an auto-generated temporary docName: \`${tempDocName}\`.`,
+    ``,
+    `Read the content, pick a meaningful docName slug, and call:`,
+    `\`kb_set_docname(oldDocName="${tempDocName}", newDocName="<your-slug>")\``,
+    ``,
+    `This renames the source file and updates the registry.`,
+    `You MUST call \`kb_set_docname\` before any other tool call.`,
+    `Use the new docName in all subsequent calls.`,
+    ``,
+    `### Important: before writing ANYTHING, always read current state`,
+    `Call \`kb_read_index\` to see the current index.`,
+    `Call \`kb_list_concepts\` to see existing concept slugs.`,
+    ``,
+    `### Step 1: Write the summary`,
+    `Write a concise summary (200-400 words) for this document. Call:`,
+    `\`kb_write_summary(docName=<newDocName>, content=<summary>)\``,
+    `The summary should capture key ideas, findings, and contributions.`,
+    ``,
+    `### Step 2: Extract and integrate concepts`,
+    `For each cross-cutting topic this document touches:`,
+    ``,
+    `* **If the topic matches an EXISTING concept:**`,
+    `  1. Call \`kb_read_concept(slug)\` to read its current content`,
+    `  2. Call \`kb_update_concept(slug, content, source="summary/<newDocName>")\``,
+    `     to rewrite the body with new info integrated. The new source is`,
+    `     automatically merged — old sources are preserved.`,
+    ``,
+    `* **If the topic is NEW and substantive:**`,
+    `  Call \`kb_write_concept(slug, content, sources=["summary/<newDocName>"])\` to create from scratch.`,
+    ``,
+    `**IMPORTANT:** The \`sources\` parameter expects summary page references like`,
+    `\`["summary/<newDocName>"]\`, NOT raw filenames like \`["<newDocName>.md"]\`.`,
+    ``,
+    `Concept slug rules: lowercase, hyphens, 4 words max.`,
+    `  Good: "caching-strategy", "api-authentication"`,
+    `  Bad: "Cache", "Stuff about APIs and things"`,
+    ``,
+    `Do not create one-concept-per-document — merge overlapping themes.`,
+    ``,
+    `### Step 3: Update the index`,
+    `Call \`kb_update_index(entries)\` with a COMPLETE list of ALL pages`,
+    `(summaries + concepts). Include every existing page, not just new ones.`,
+    `Each entry: \`{ type: "summary"|"concept", slug: "...", brief: "one-liner" }\``,
+    ``,
+    `### Formatting rules`,
+    `- Concepts MUST be cross-document synthesis, not single-document regurgitation`,
+    `- Be concise. Wiki content should be scannable.`,
+    `- Do NOT write footer sections — they are generated automatically.`,
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Query prompt (for /kb-query)
 // ---------------------------------------------------------------------------
 
