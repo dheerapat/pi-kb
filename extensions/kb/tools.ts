@@ -565,6 +565,7 @@ export function registerTools(
 
       // Update registry
       entry.docName = params.newDocName;
+      entry.name = newFilename;
       entry.sourcePath = newSourceRel;
       // Update originalPath only if it's an inline type
       if (entry.originalPath.startsWith("inline:")) {
